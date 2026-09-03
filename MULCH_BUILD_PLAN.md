@@ -542,4 +542,4 @@ Cut order if slipping: race mode → live all-sessions WS → `steer` → cohere
 - Terminal output stays calm.
 
 ## Deviations
-_(empty — fill in as the build proceeds; the first entry must be the GoAI spike outcome)_
+- **2026-09-03 — GoAI rejected; official OpenAI SDK selected.** GoAI `v0.10.0` passed the live content, tool-call identifier, usage, and replay checks against OpenCode Go, but cancelling a stream returned `nil` rather than `context.Canceled`. Per §4.1's fail-fast rule, Mulch uses `github.com/openai/openai-go/v3` pinned at `v3.47.0` through OpenCode Go's OpenAI-compatible endpoint. Configuration uses Mulch-owned `MULCH_PROVIDER_API_KEY`, `MULCH_PROVIDER_BASE_URL`, and `MULCH_MODEL` variables. OpenCode Go does not advertise embeddings, so Voyage remains the default through a standard-library HTTP adapter with no additional dependency.
