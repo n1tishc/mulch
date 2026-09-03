@@ -36,6 +36,25 @@ func TestPayloadsUseCanonicalJSONKeys(t *testing.T) {
 	}
 }
 
+func TestBuildMessagesReconstructsToolTurn(t *testing.T) {
+	events := []event.Event{
+		{Seq: 1, Type: event.TypeAssistantMessage, Payload: payload(t, event.AssistantMessage{Text: "checking"})},
+		{Seq: 2, Type: event.TypeAssistantToolCall, Payload: payload(t, event.AssistantToolCall{CallID: "call-1", Name: "read", Input: json.RawMessage(`{"path":"hello.go"}`)})},
+		{Seq: 3, Type: event.TypeToolResult, Payload: payload(t, event.ToolResult{CallID: "call-1", Name: "read", Output: "package main", DurationMS: 2})},
+	}
+	want := []provider.Message{
+		{Role: provider.RoleAssistant, Blocks: []provider.Block{{Type: "text", Text: "checking"}, {Type: "tool_use", CallID: "call-1", Name: "read", Input: `{"path":"hello.go"}`}}},
+		{Role: provider.RoleTool, Blocks: []provider.Block{{Type: "tool_result", CallID: "call-1", Name: "read", Output: "package main"}}},
+	}
+	got, err := event.BuildMessages(events, []int64{1, 2, 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("messages = %#v, want %#v", got, want)
+	}
+}
+
 func payload(t *testing.T, v any) []byte {
 	t.Helper()
 	b, err := json.Marshal(v)

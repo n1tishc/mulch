@@ -14,6 +14,7 @@ import (
 	"github.com/n1tishc/mulch/internal/bus"
 	"github.com/n1tishc/mulch/internal/event"
 	"github.com/n1tishc/mulch/internal/provider"
+	"github.com/n1tishc/mulch/internal/tool"
 )
 
 const defaultModel = "glm-5.3-flash"
@@ -66,7 +67,8 @@ func Execute(ctx context.Context, args []string, opts Options) error {
 		return err
 	}
 	defer store.Close()
-	id, runErr := agent.Run(ctx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Model: *model, Workdir: *workdir}, flags.Arg(0), func(text string) { _, _ = io.WriteString(opts.Stdout, text) })
+	executor := tool.NewExecutor([]tool.Tool{tool.NewRead(*workdir), tool.NewWrite(*workdir), tool.NewEdit(*workdir), tool.NewBash(*workdir)})
+	id, runErr := agent.Run(ctx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: *model, Workdir: *workdir}, flags.Arg(0), func(text string) { _, _ = io.WriteString(opts.Stdout, text) })
 	if id != "" {
 		_, _ = fmt.Fprintf(opts.Stderr, "\nsession %s\n", id)
 	}

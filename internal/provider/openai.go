@@ -6,6 +6,7 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/shared"
 )
 
 const DefaultBaseURL = "https://opencode.ai/zen/go/v1"
@@ -35,12 +36,30 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Delta) (Res
 		case RoleUser:
 			messages = append(messages, openai.UserMessage(text))
 		case RoleAssistant:
-			messages = append(messages, openai.AssistantMessage(text))
+			assistant := openai.ChatCompletionAssistantMessageParam{}
+			if text != "" {
+				assistant.Content.OfString = openai.String(text)
+			}
+			for _, block := range message.Blocks {
+				if block.Type == "tool_use" {
+					assistant.ToolCalls = append(assistant.ToolCalls, openai.ChatCompletionMessageToolCallUnionParam{OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{ID: block.CallID, Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{Name: block.Name, Arguments: block.Input}}})
+				}
+			}
+			messages = append(messages, openai.ChatCompletionMessageParamUnion{OfAssistant: &assistant})
+		case RoleTool:
+			for _, block := range message.Blocks {
+				if block.Type == "tool_result" {
+					messages = append(messages, openai.ToolMessage(block.Output, block.CallID))
+				}
+			}
 		default:
 			return Response{}, fmt.Errorf("unsupported message role %q", message.Role)
 		}
 	}
 	params := openai.ChatCompletionNewParams{Messages: messages, Model: openai.ChatModel(req.Model), StreamOptions: openai.ChatCompletionStreamOptionsParam{IncludeUsage: openai.Bool(true)}}
+	for _, spec := range req.Tools {
+		params.Tools = append(params.Tools, openai.ChatCompletionToolUnionParam{OfFunction: &openai.ChatCompletionFunctionToolParam{Function: shared.FunctionDefinitionParam{Name: spec.Name, Description: openai.String(spec.Description), Parameters: shared.FunctionParameters(spec.InputSchema)}}})
+	}
 	if req.MaxTokens > 0 {
 		params.MaxCompletionTokens = openai.Int(int64(req.MaxTokens))
 	}

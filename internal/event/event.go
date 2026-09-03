@@ -8,13 +8,16 @@ import (
 type Type string
 
 const (
-	TypeSessionStart     Type = "session.start"
-	TypeSystemPrompt     Type = "system.prompt"
-	TypeUserMessage      Type = "user.message"
-	TypeLLMRequest       Type = "llm.request"
-	TypeLLMResponse      Type = "llm.response"
-	TypeAssistantMessage Type = "assistant.message"
-	TypeSessionEnd       Type = "session.end"
+	TypeSessionStart      Type = "session.start"
+	TypeSystemPrompt      Type = "system.prompt"
+	TypeUserMessage       Type = "user.message"
+	TypeLLMRequest        Type = "llm.request"
+	TypeLLMResponse       Type = "llm.response"
+	TypeAssistantMessage  Type = "assistant.message"
+	TypeAssistantToolCall Type = "assistant.tool_call"
+	TypeToolStart         Type = "tool.start"
+	TypeToolResult        Type = "tool.result"
+	TypeSessionEnd        Type = "session.end"
 )
 
 type Status string
@@ -56,7 +59,12 @@ type SessionStart struct {
 	Workdir string `json:"workdir"`
 }
 type SystemPrompt struct {
-	Text string `json:"text"`
+	Text    string         `json:"text"`
+	Sources []PromptSource `json:"sources"`
+}
+type PromptSource struct {
+	Path       string    `json:"path"`
+	ModifiedAt time.Time `json:"modified_at"`
 }
 type UserMessage struct {
 	Text   string `json:"text"`
@@ -76,6 +84,26 @@ type LLMResponse struct {
 type AssistantMessage struct {
 	Text       string `json:"text"`
 	StopReason string `json:"stop_reason"`
+}
+type AssistantToolCall struct {
+	CallID string          `json:"call_id"`
+	Name   string          `json:"name"`
+	Input  json.RawMessage `json:"input"`
+}
+type ToolStart struct {
+	CallID    string          `json:"call_id"`
+	Name      string          `json:"name"`
+	Input     json.RawMessage `json:"input"`
+	StartedAt time.Time       `json:"started_at"`
+}
+type ToolResult struct {
+	CallID     string     `json:"call_id"`
+	Name       string     `json:"name"`
+	Output     string     `json:"output"`
+	IsError    bool       `json:"is_error"`
+	Cancelled  bool       `json:"cancelled"`
+	DurationMS int64      `json:"duration_ms"`
+	SourceTS   *time.Time `json:"source_ts,omitempty"`
 }
 type SessionEnd struct {
 	Status            Status `json:"status"`

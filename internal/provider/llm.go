@@ -12,11 +12,13 @@ const (
 )
 
 type Block struct {
-	Type   string `json:"type"`
-	Text   string `json:"text,omitempty"`
-	CallID string `json:"call_id,omitempty"`
-	Name   string `json:"name,omitempty"`
-	Input  string `json:"input,omitempty"`
+	Type    string `json:"type"`
+	Text    string `json:"text,omitempty"`
+	CallID  string `json:"call_id,omitempty"`
+	Name    string `json:"name,omitempty"`
+	Input   string `json:"input,omitempty"`
+	Output  string `json:"output,omitempty"`
+	IsError bool   `json:"is_error,omitempty"`
 }
 
 type Message struct {
@@ -26,8 +28,14 @@ type Message struct {
 
 type Request struct {
 	Messages  []Message
+	Tools     []ToolSpec
 	MaxTokens int
 	Model     string
+}
+
+type ToolSpec struct {
+	Name, Description string
+	InputSchema       map[string]any
 }
 
 type Delta struct{ Text string }
