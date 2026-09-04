@@ -6,9 +6,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 	"github.com/n1tishc/mulch/internal/agent"
@@ -19,6 +21,7 @@ import (
 	"github.com/n1tishc/mulch/internal/intervene"
 	"github.com/n1tishc/mulch/internal/provider"
 	"github.com/n1tishc/mulch/internal/score"
+	"github.com/n1tishc/mulch/internal/server"
 	"github.com/n1tishc/mulch/internal/session"
 	"github.com/n1tishc/mulch/internal/tool"
 )
@@ -52,7 +55,7 @@ func Execute(ctx context.Context, args []string, opts Options) error {
 	}
 	_ = godotenv.Load()
 	if len(args) == 0 {
-		return errors.New("usage: mulch <run|eval|replay|resume|branch|tree|label|sessions> [flags]")
+		return errors.New("usage: mulch <run|eval|replay|resume|branch|tree|label|sessions|serve> [flags]")
 	}
 	switch args[0] {
 	case "run":
@@ -71,9 +74,46 @@ func Execute(ctx context.Context, args []string, opts Options) error {
 		return label(ctx, args[1:], opts)
 	case "sessions":
 		return sessions(ctx, args[1:], opts)
+	case "serve":
+		return serve(ctx, args[1:], opts)
 	default:
-		return errors.New("usage: mulch <run|eval|replay|resume|branch|tree|label|sessions> [flags]")
+		return errors.New("usage: mulch <run|eval|replay|resume|branch|tree|label|sessions|serve> [flags]")
 	}
+}
+
+func serve(ctx context.Context, args []string, opts Options) error {
+	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
+	flags.SetOutput(opts.Stderr)
+	address := flags.String("addr", ":4141", "listen address")
+	dbPath := flags.String("db", envOr(opts.Getenv, "MULCH_DB", defaultDB()), "event database")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("mulch serve takes no arguments")
+	}
+	listener, err := net.Listen("tcp", *address)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", *address, err)
+	}
+	_ = listener.Close()
+	if err := os.MkdirAll(filepath.Dir(*dbPath), 0700); err != nil {
+		return fmt.Errorf("create database directory: %w", err)
+	}
+	store, err := event.Open(context.WithoutCancel(ctx), *dbPath, nil)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	_, _ = fmt.Fprintf(opts.Stdout, "mulch viewer listening on http://%s\n", viewerAddress(*address))
+	return server.New(store).Serve(ctx, *address)
+}
+
+func viewerAddress(address string) string {
+	if strings.HasPrefix(address, ":") {
+		return "localhost" + address
+	}
+	return address
 }
 
 func evalCommand(ctx context.Context, args []string, opts Options) error {

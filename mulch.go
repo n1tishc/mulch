@@ -11,6 +11,7 @@ import (
 	"github.com/n1tishc/mulch/internal/event"
 	"github.com/n1tishc/mulch/internal/hook"
 	"github.com/n1tishc/mulch/internal/provider"
+	"github.com/n1tishc/mulch/internal/server"
 	"github.com/n1tishc/mulch/internal/session"
 	"github.com/n1tishc/mulch/internal/tool"
 )
@@ -43,7 +44,10 @@ type Options struct {
 	Hooks                                []Hook
 }
 type RunOpts struct{ Workdir string }
-type Harness struct{ manager *session.Manager }
+type Harness struct {
+	manager *session.Manager
+	server  *server.Server
+}
 
 func Open(opts Options) (*Harness, error) {
 	if opts.DB == "" {
@@ -73,7 +77,7 @@ func Open(opts Options) (*Harness, error) {
 		_, runErr := agent.RunSession(ctx, agent.Dependencies{Store: store, LLM: provider.NewOpenAI(opts.APIKey, opts.BaseURL), Tools: executor, Model: opts.Model, Workdir: workdir, ContextWindow: opts.ContextWindow, MaxTurns: opts.MaxTurns, Hooks: hooks}, id, task, nil)
 		return runErr
 	}})
-	return &Harness{manager: m}, nil
+	return &Harness{manager: m, server: server.New(store)}, nil
 }
 
 func (h *Harness) Run(ctx context.Context, task string, opts RunOpts) (string, error) {
@@ -86,6 +90,11 @@ func (h *Harness) Steer(id, text string) error               { return h.manager.
 func (h *Harness) Cancel(id string) error                    { return h.manager.Cancel(id) }
 func (h *Harness) List() []Status                            { return h.manager.List() }
 func (h *Harness) Wait(ctx context.Context, id string) error { return h.manager.Wait(ctx, id) }
+
+// Serve runs the embedded viewer and durable event-log API until ctx is cancelled.
+func (h *Harness) Serve(ctx context.Context, address string) error {
+	return h.server.Serve(ctx, address)
+}
 func (h *Harness) Shutdown(ctx context.Context) error {
 	if err := h.manager.Shutdown(ctx); err != nil {
 		return err

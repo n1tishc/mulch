@@ -23,3 +23,18 @@ func TestPublicHarnessValidatesRequiredConfiguration(t *testing.T) {
 		t.Fatal("Open accepted an empty DB")
 	}
 }
+
+func TestPublicHarnessExposesServe(t *testing.T) {
+	h, err := mulch.Open(mulch.Options{DB: filepath.Join(t.TempDir(), "mulch.db"), APIKey: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := h.Serve(ctx, "127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
