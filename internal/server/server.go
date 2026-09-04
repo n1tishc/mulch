@@ -208,7 +208,7 @@ func (s *Server) sessionStream(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	defer conn.CloseNow()
+	defer func() { _ = conn.CloseNow() }()
 	last := from - 1
 	for _, item := range history {
 		if err = wsjson.Write(r.Context(), conn, item); err != nil {

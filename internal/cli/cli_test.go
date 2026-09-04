@@ -64,6 +64,22 @@ func TestResumeReconstructsVisibleContextAndAppendsHistory(t *testing.T) {
 	}
 }
 
+func TestVersionPrintsConfiguredBuildVersion(t *testing.T) {
+	var stdout bytes.Buffer
+	err := cli.Execute(t.Context(), []string{"version"}, cli.Options{
+		Stdout:  &stdout,
+		Stderr:  io.Discard,
+		Getenv:  func(string) string { return "" },
+		Version: "v1.2.3",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "mulch v1.2.3\n"; got != want {
+		t.Fatalf("version output = %q, want %q", got, want)
+	}
+}
+
 func TestBranchTreeSessionsAndLabelCommands(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "mulch.db")
 	var runErr bytes.Buffer

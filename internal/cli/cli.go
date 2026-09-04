@@ -39,6 +39,7 @@ type Options struct {
 	Getenv          func(string) string
 	LLMFactory      LLMFactory
 	EmbedderFactory EmbedderFactory
+	Version         string
 }
 
 func Execute(ctx context.Context, args []string, opts Options) error {
@@ -51,6 +52,14 @@ func Execute(ctx context.Context, args []string, opts Options) error {
 	if opts.Getenv == nil {
 		opts.Getenv = os.Getenv
 	}
+	if len(args) == 1 && args[0] == "version" {
+		version := opts.Version
+		if version == "" {
+			version = "dev"
+		}
+		_, err := fmt.Fprintf(opts.Stdout, "mulch %s\n", version)
+		return err
+	}
 	if opts.LLMFactory == nil {
 		opts.LLMFactory = func(key, base string) provider.LLM { return provider.NewOpenAI(key, base) }
 	}
@@ -59,7 +68,7 @@ func Execute(ctx context.Context, args []string, opts Options) error {
 	}
 	_ = godotenv.Load()
 	if len(args) == 0 {
-		return errors.New("usage: mulch <run|eval|replay|resume|branch|tree|label|sessions|serve> [flags]")
+		return usageError()
 	}
 	switch args[0] {
 	case "run":
@@ -81,8 +90,12 @@ func Execute(ctx context.Context, args []string, opts Options) error {
 	case "serve":
 		return serve(ctx, args[1:], opts)
 	default:
-		return errors.New("usage: mulch <run|eval|replay|resume|branch|tree|label|sessions|serve> [flags]")
+		return usageError()
 	}
+}
+
+func usageError() error {
+	return errors.New("usage: mulch <run|eval|replay|resume|branch|tree|label|sessions|serve|version> [flags]")
 }
 
 func serve(ctx context.Context, args []string, opts Options) error {
@@ -109,7 +122,7 @@ func serve(ctx context.Context, args []string, opts Options) error {
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	var control server.Control
 	var manager *session.Manager
 	if key := opts.Getenv("MULCH_PROVIDER_API_KEY"); key != "" {
@@ -129,7 +142,7 @@ func serve(ctx context.Context, args []string, opts Options) error {
 			return runErr
 		}})
 		control = server.NewControl(manager, store)
-		defer manager.Close()
+		defer func() { _ = manager.Close() }()
 	}
 	_, _ = fmt.Fprintf(opts.Stdout, "mulch viewer listening on http://%s\n", viewerAddress(*address))
 	return server.New(store, control).Serve(ctx, *address)
@@ -239,7 +252,7 @@ func continueCLI(ctx context.Context, dbPath, id, prompt string, jsonMode bool, 
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	session, err := store.Session(ctx, id)
 	if err != nil {
 		return fmt.Errorf("load session: %w", err)
@@ -297,7 +310,7 @@ func sessions(ctx context.Context, args []string, opts Options) error {
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	all, err := store.Sessions(ctx)
 	if err != nil {
 		return err
@@ -319,7 +332,7 @@ func tree(ctx context.Context, args []string, opts Options) error {
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	node, err := store.Tree(ctx, flags.Arg(0))
 	if err != nil {
 		return fmt.Errorf("load session tree: %w", err)
@@ -341,7 +354,7 @@ func label(ctx context.Context, args []string, opts Options) error {
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	return store.SetLabel(ctx, flags.Arg(0), flags.Arg(1))
 }
 
@@ -420,7 +433,7 @@ func run(ctx context.Context, args []string, opts Options) error {
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	executor := tool.NewExecutor([]tool.Tool{tool.NewRead(*workdir), tool.NewWrite(*workdir), tool.NewEdit(*workdir), tool.NewBash(*workdir)})
 	judge := opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL"))
 	coherence := score.NewCoherenceWithModel(judge, envOr(opts.Getenv, "MULCH_JUDGE_MODEL", *model))
@@ -445,7 +458,7 @@ func run(ctx context.Context, args []string, opts Options) error {
 		_, runErr := agent.RunSession(runCtx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: *model, Workdir: *workdir, ContextWindow: *contextWindow, Hooks: sessionHooks}, id, task, emit)
 		return runErr
 	}})
-	defer manager.Close()
+	defer func() { _ = manager.Close() }()
 	id, runErr := manager.StartWith(ctx, flags.Arg(0), session.RunOpts{Workdir: *workdir})
 	if runErr == nil {
 		runErr = manager.Wait(ctx, id)
@@ -498,7 +511,7 @@ func submitToDaemon(ctx context.Context, opts Options, task, workdir string, eli
 	if err != nil {
 		return "", true, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusAccepted {
 		return "", true, fmt.Errorf("daemon start: %s", strings.TrimSpace(readResponse(response.Body)))
 	}
@@ -561,7 +574,7 @@ func replay(ctx context.Context, args []string, opts Options) error {
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	if _, err := store.Session(ctx, flags.Arg(0)); err != nil {
 		return fmt.Errorf("load session: %w", err)
 	}

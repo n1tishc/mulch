@@ -64,7 +64,7 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Delta) (Res
 		params.MaxCompletionTokens = openai.Int(int64(req.MaxTokens))
 	}
 	stream := o.client.Chat.Completions.NewStreaming(ctx, params)
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	acc := openai.ChatCompletionAccumulator{}
 	for stream.Next() {
 		chunk := stream.Current()

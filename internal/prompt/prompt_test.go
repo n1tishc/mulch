@@ -33,7 +33,7 @@ func TestAssembleDiscoversInstructionsNearestLast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !(strings.Index(assembled.Text, "global instructions") < strings.Index(assembled.Text, "parent instructions") && strings.Index(assembled.Text, "parent instructions") < strings.Index(assembled.Text, "nearest instructions")) {
+	if strings.Index(assembled.Text, "global instructions") >= strings.Index(assembled.Text, "parent instructions") || strings.Index(assembled.Text, "parent instructions") >= strings.Index(assembled.Text, "nearest instructions") {
 		t.Fatalf("instruction order:\n%s", assembled.Text)
 	}
 	if len(assembled.Sources) != 3 {

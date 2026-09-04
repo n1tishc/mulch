@@ -146,7 +146,7 @@ func Run(ctx context.Context, scenario Scenario, opts Options) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	defer os.RemoveAll(root)
+	defer func() { _ = os.RemoveAll(root) }()
 	db := filepath.Join(root, "eval.db")
 	eventBus := bus.New()
 	dispatch := &dispatcher{hooks: map[string][]hook.OnEvent{}}
@@ -180,7 +180,7 @@ func Run(ctx context.Context, scenario Scenario, opts Options) (Report, error) {
 		for _, runMode := range []mode{controlMode, interventionMode} {
 			wd := filepath.Join(root, fmt.Sprintf("%s-%d", runMode, n))
 			if err = copyTree(scenario.WorkdirFixture, wd); err != nil {
-				manager.Close()
+				_ = manager.Close()
 				return Report{}, err
 			}
 			jobsMu.Lock()
@@ -188,7 +188,7 @@ func Run(ctx context.Context, scenario Scenario, opts Options) (Report, error) {
 			jobsMu.Unlock()
 			id, startErr := manager.StartWith(ctx, scenario.Task, session.RunOpts{Workdir: wd})
 			if startErr != nil {
-				manager.Close()
+				_ = manager.Close()
 				return Report{}, startErr
 			}
 			ids = append(ids, id)
@@ -199,7 +199,7 @@ func Run(ctx context.Context, scenario Scenario, opts Options) (Report, error) {
 		waitErr := manager.Wait(ctx, id)
 		recordedSession, sessionErr := store.Session(ctx, id)
 		if sessionErr != nil {
-			manager.Close()
+			_ = manager.Close()
 			return Report{}, sessionErr
 		}
 		jobsMu.RLock()
@@ -207,7 +207,7 @@ func Run(ctx context.Context, scenario Scenario, opts Options) (Report, error) {
 		jobsMu.RUnlock()
 		events, listErr := store.List(ctx, id, 1)
 		if listErr != nil {
-			manager.Close()
+			_ = manager.Close()
 			return Report{}, listErr
 		}
 		success := waitErr == nil && checkSuccess(ctx, recordedSession.Workdir, scenario.SuccessCommands)

@@ -124,7 +124,7 @@ func (s *SQLiteStore) writeLoop(ctx context.Context) {
 		close(s.done)
 		return
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	defer close(s.done)
 	for {
 		select {
@@ -154,7 +154,7 @@ func (s *SQLiteStore) executeWrite(conn *sql.Conn, req writeRequest) writeResult
 		if err != nil {
 			return writeResult{err: err}
 		}
-		defer tx.Rollback()
+		defer func() { _ = tx.Rollback() }()
 		var id, seq int64
 		err = tx.QueryRowContext(req.ctx, `INSERT INTO events(session_id,seq,turn,type,payload,tokens,visible,image_ref,created_at) VALUES(?,(SELECT COALESCE(MAX(seq),0)+1 FROM events WHERE session_id=?),?,?,?,?,?,?,?) RETURNING id,seq`, e.SessionID, e.SessionID, e.Turn, e.Type, string(e.Payload), e.Tokens, boolInt(e.Visible), nullableString(e.ImageRef), e.CreatedAt.Format(time.RFC3339Nano)).Scan(&id, &seq)
 		if err == nil {
@@ -197,7 +197,7 @@ func (s *SQLiteStore) executeWrite(conn *sql.Conn, req writeRequest) writeResult
 		if err != nil {
 			return writeResult{err: err}
 		}
-		defer tx.Rollback()
+		defer func() { _ = tx.Rollback() }()
 		changes := make([]VisibilityChange, 0, len(req.seqs))
 		for _, seq := range req.seqs {
 			var current int
@@ -238,7 +238,7 @@ func (s *SQLiteStore) executeWrite(conn *sql.Conn, req writeRequest) writeResult
 		if err != nil {
 			return writeResult{err: err}
 		}
-		defer tx.Rollback()
+		defer func() { _ = tx.Rollback() }()
 		for hash, vector := range req.embeddings {
 			if _, err = tx.ExecContext(req.ctx, `INSERT INTO embeddings(model,hash,vector) VALUES(?,?,?) ON CONFLICT(model,hash) DO NOTHING`, req.model, hash, encodeVector(vector)); err != nil {
 				return writeResult{err: err}
@@ -273,7 +273,7 @@ func (s *SQLiteStore) executeBranch(conn *sql.Conn, req writeRequest) writeResul
 	for rows.Next() {
 		candidate, scanErr := scanEvent(rows)
 		if scanErr != nil {
-			rows.Close()
+			_ = rows.Close()
 			return writeResult{err: scanErr}
 		}
 		history = append(history, candidate)
@@ -308,7 +308,7 @@ func (s *SQLiteStore) executeBranch(conn *sql.Conn, req writeRequest) writeResul
 	if err != nil {
 		return writeResult{err: err}
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err = tx.ExecContext(req.ctx, `INSERT INTO sessions(id,parent_id,fork_seq,task,model,context_window,workdir,created_at,status) VALUES(?,?,?,?,?,?,?,?,?)`, child.ID, child.ParentID, req.atSeq, child.Task, child.Model, child.ContextWindow, child.Workdir, child.CreatedAt.Format(time.RFC3339Nano), StatusRunning); err != nil {
 		return writeResult{err: err}
 	}
@@ -340,7 +340,7 @@ func (s *SQLiteStore) List(ctx context.Context, sessionID string, from int64) ([
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var result []Event
 	for rows.Next() {
 		var e Event
@@ -400,18 +400,18 @@ func (s *SQLiteStore) Load(ctx context.Context, model string, hashes []string) (
 			var hash string
 			var blob []byte
 			if err := rows.Scan(&hash, &blob); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return nil, err
 			}
 			vector, err := decodeVector(blob)
 			if err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return nil, err
 			}
 			result[hash] = vector
 		}
 		if err := rows.Err(); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		if err := rows.Close(); err != nil {
@@ -489,7 +489,7 @@ func (s *SQLiteStore) Sessions(ctx context.Context) ([]Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var sessions []Session
 	for rows.Next() {
 		x, err := scanSession(rows)

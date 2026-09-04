@@ -101,7 +101,8 @@ func (e *Executor) RunAll(ctx context.Context, calls []Call, emit func(Execution
 			started := time.Now()
 			send(ExecutionEvent{Kind: EventStart, Call: call, StartedAt: started})
 			toolCtx, cancel := context.WithTimeout(ctx, timeout)
-			result, err := Result{}, error(nil)
+			var result Result
+			var err error
 			if candidate := e.tools[call.Name]; candidate == nil {
 				result = Result{Output: fmt.Sprintf("unknown tool %q", call.Name), IsError: true}
 			} else {

@@ -50,7 +50,7 @@ func (v *Voyage) Embed(ctx context.Context, texts []string) ([][]float32, error)
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		return nil, fmt.Errorf("voyage embeddings: %s: %s", response.Status, strings.TrimSpace(string(message)))

@@ -13,7 +13,7 @@ func LoadPolicy(path string) (Policy, error) {
 	if err != nil {
 		return Policy{}, fmt.Errorf("open policy: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	policy := DefaultPolicy()
 	decoder := json.NewDecoder(file)
 	decoder.DisallowUnknownFields()

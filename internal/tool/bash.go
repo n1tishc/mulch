@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -75,13 +74,7 @@ func (b *Bash) Run(ctx context.Context, input json.RawMessage) (Result, error) {
 	cmd := exec.CommandContext(runCtx, executable, args...)
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "TMPDIR="+filepath.Join(cacheDir, "tmp"), "GOCACHE="+filepath.Join(cacheDir, "go-build"), "XDG_CACHE_HOME="+cacheDir)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
+	configureProcessCancellation(cmd)
 	var output bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &output, &output
 	err = cmd.Run()

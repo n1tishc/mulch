@@ -1,6 +1,12 @@
 .env
 .env.*
 !.env.example
+.mulch-cache/
+dist/
+/mulch
+*.db
+*.db-shm
+*.db-wal
 ui/node_modules/
 ui/dist/
 ui/*.tsbuildinfo
