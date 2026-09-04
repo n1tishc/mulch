@@ -42,6 +42,13 @@ func Run(ctx context.Context, deps Dependencies, task string, emit func(string))
 	if err != nil {
 		return "", err
 	}
+	return RunSession(ctx, deps, id, task, emit)
+}
+
+// RunSession starts a new session with a caller-owned ID. Session managers use
+// this entry point so an ID can be returned before the loop completes.
+func RunSession(ctx context.Context, deps Dependencies, id, task string, emit func(string)) (string, error) {
+	var err error
 	started := time.Now()
 	if deps.Workdir == "" {
 		deps.Workdir = "."
@@ -171,6 +178,35 @@ func continueSession(ctx context.Context, deps Dependencies, id string, started 
 		visible, visibleErr := deps.Store.Visible(ctx, id)
 		if visibleErr != nil {
 			return fail(visibleErr, turn-1, totalInput, totalOutput)
+		}
+		turnState := &hook.Turn{SessionID: id, Turn: turn, Visible: visible}
+		lastGatheredSeq := int64(0)
+		for _, candidate := range visible {
+			if candidate.Seq > lastGatheredSeq {
+				lastGatheredSeq = candidate.Seq
+			}
+		}
+		for _, extension := range deps.Hooks {
+			if before, ok := extension.(hook.BeforeTurn); ok {
+				if err = before.BeforeTurn(ctx, turnState); err != nil {
+					return fail(fmt.Errorf("before turn hook %q: %w", extension.Name(), err), turn-1, totalInput, totalOutput)
+				}
+			}
+		}
+		for _, text := range turnState.Inject {
+			if err = appendPayload(event.TypeContextInject, turn, true, event.ContextInject{Reason: "before turn hook", Text: text, By: "hook"}); err != nil {
+				return fail(err, turn-1, totalInput, totalOutput)
+			}
+		}
+		latest, visibleErr := deps.Store.Visible(ctx, id)
+		if visibleErr != nil {
+			return fail(visibleErr, turn-1, totalInput, totalOutput)
+		}
+		visible = append([]event.Event(nil), turnState.Visible...)
+		for _, candidate := range latest {
+			if candidate.Seq > lastGatheredSeq {
+				visible = append(visible, candidate)
+			}
 		}
 		seqs := make([]int64, 0, len(visible))
 		for _, candidate := range visible {

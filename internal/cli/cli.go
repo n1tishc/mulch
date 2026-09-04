@@ -12,11 +12,13 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/n1tishc/mulch/internal/agent"
+	"github.com/n1tishc/mulch/internal/bus"
 	"github.com/n1tishc/mulch/internal/event"
 	"github.com/n1tishc/mulch/internal/hook"
 	"github.com/n1tishc/mulch/internal/intervene"
 	"github.com/n1tishc/mulch/internal/provider"
 	"github.com/n1tishc/mulch/internal/score"
+	"github.com/n1tishc/mulch/internal/session"
 	"github.com/n1tishc/mulch/internal/tool"
 )
 
@@ -292,6 +294,8 @@ func run(ctx context.Context, args []string, opts Options) error {
 		return fmt.Errorf("create database directory: %w", err)
 	}
 	publisher := &fanoutPublisher{}
+	eventBus := bus.New()
+	publisher.Add(eventBus)
 	var jsonOutput *jsonlPublisher
 	var healthOutput *healthPublisher
 	if *jsonMode {
@@ -325,7 +329,16 @@ func run(ctx context.Context, args []string, opts Options) error {
 	if *jsonMode {
 		emit = func(string) {}
 	}
-	id, runErr := agent.Run(ctx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: *model, Workdir: *workdir, ContextWindow: *contextWindow, Hooks: hooks}, flags.Arg(0), emit)
+	manager := session.New(session.Options{Bus: eventBus, Run: func(runCtx context.Context, id, task string, _ session.RunOpts, steering *session.Steering) error {
+		sessionHooks := append(append([]hook.Hook(nil), hooks...), steering.Bind(store))
+		_, runErr := agent.RunSession(runCtx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: *model, Workdir: *workdir, ContextWindow: *contextWindow, Hooks: sessionHooks}, id, task, emit)
+		return runErr
+	}})
+	defer manager.Close()
+	id, runErr := manager.StartWith(ctx, flags.Arg(0), session.RunOpts{Workdir: *workdir})
+	if runErr == nil {
+		runErr = manager.Wait(ctx, id)
+	}
 	if id != "" {
 		if !*jsonMode {
 			_, _ = fmt.Fprintf(opts.Stderr, "\nsession %s\n", id)
