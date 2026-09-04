@@ -102,6 +102,7 @@ type ToolResult struct {
 	Output     string     `json:"output"`
 	IsError    bool       `json:"is_error"`
 	Cancelled  bool       `json:"cancelled"`
+	TimedOut   bool       `json:"timed_out"`
 	DurationMS int64      `json:"duration_ms"`
 	SourceTS   *time.Time `json:"source_ts,omitempty"`
 }

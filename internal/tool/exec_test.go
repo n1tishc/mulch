@@ -10,8 +10,74 @@ import (
 	"github.com/n1tishc/mulch/internal/tool"
 )
 
+func TestExecutorRunsIndependentCallsConcurrently(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		executor := tool.NewExecutor([]tool.Tool{
+			&fakeTool{name: "one", delay: 10 * time.Second},
+			&fakeTool{name: "two", delay: 20 * time.Second},
+			&fakeTool{name: "three", delay: 30 * time.Second},
+		})
+		started := time.Now()
+		outcomes := executor.RunAll(t.Context(), []tool.Call{
+			{ID: "1", Name: "one", Input: raw(`{}`)},
+			{ID: "2", Name: "two", Input: raw(`{}`)},
+			{ID: "3", Name: "three", Input: raw(`{}`)},
+		}, nil)
+		if elapsed := time.Since(started); elapsed != 30*time.Second {
+			t.Fatalf("elapsed = %s, want longest call duration", elapsed)
+		}
+		if len(outcomes) != 3 {
+			t.Fatalf("outcomes = %d", len(outcomes))
+		}
+	})
+}
+
+func TestExecutorHonorsConfiguredParallelism(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		executor := tool.NewExecutor([]tool.Tool{
+			&fakeTool{name: "one", delay: 10 * time.Second},
+			&fakeTool{name: "two", delay: 10 * time.Second},
+			&fakeTool{name: "three", delay: 10 * time.Second},
+		})
+		executor.MaxPar = 2
+		started := time.Now()
+		executor.RunAll(t.Context(), []tool.Call{
+			{ID: "1", Name: "one", Input: raw(`{}`)},
+			{ID: "2", Name: "two", Input: raw(`{}`)},
+			{ID: "3", Name: "three", Input: raw(`{}`)},
+		}, nil)
+		if elapsed := time.Since(started); elapsed != 20*time.Second {
+			t.Fatalf("elapsed = %s, want schedule constrained by MaxPar", elapsed)
+		}
+	})
+}
+
 func TestExecutorEmitsMatchingTimedEventsInCallOrder(t *testing.T) {
 	synctest.Test(t, testExecutorEmitsMatchingTimedEventsInCallOrder)
+}
+
+func TestExecutorEmitsResultsAsCallsFinishButReturnsCallOrder(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		executor := tool.NewExecutor([]tool.Tool{
+			&fakeTool{name: "slow", delay: 20 * time.Second, result: tool.Result{Output: "first"}},
+			&fakeTool{name: "fast", delay: 10 * time.Second, result: tool.Result{Output: "second"}},
+		})
+		var completed []string
+		outcomes := executor.RunAll(t.Context(), []tool.Call{
+			{ID: "1", Name: "slow", Input: raw(`{}`)},
+			{ID: "2", Name: "fast", Input: raw(`{}`)},
+		}, func(event tool.ExecutionEvent) {
+			if event.Kind == tool.EventResult {
+				completed = append(completed, event.Call.ID)
+			}
+		})
+		if len(completed) != 2 || completed[0] != "2" || completed[1] != "1" {
+			t.Fatalf("completion order = %v", completed)
+		}
+		if outcomes[0].Call.ID != "1" || outcomes[1].Call.ID != "2" {
+			t.Fatalf("outcomes = %#v", outcomes)
+		}
+	})
 }
 
 func TestExecutorAppliesPerCallTimeoutWithFakeTime(t *testing.T) {
@@ -19,7 +85,25 @@ func TestExecutorAppliesPerCallTimeoutWithFakeTime(t *testing.T) {
 		executor := tool.NewExecutor([]tool.Tool{&blockingTool{name: "wait"}})
 		executor.Timeout = 60 * time.Second
 		outcomes := executor.RunAll(context.Background(), []tool.Call{{ID: "1", Name: "wait", Input: raw(`{}`)}}, nil)
-		if len(outcomes) != 1 || !outcomes[0].Cancelled || !outcomes[0].Result.IsError {
+		if len(outcomes) != 1 || outcomes[0].Cancelled || !outcomes[0].TimedOut || !outcomes[0].Result.IsError {
+			t.Fatalf("outcomes = %#v", outcomes)
+		}
+	})
+}
+
+func TestExecutorRecordsParentCancellationSeparatelyFromTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		executor := tool.NewExecutor([]tool.Tool{&blockingTool{name: "wait"}})
+		executor.Timeout = time.Hour
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan []tool.Outcome)
+		go func() {
+			done <- executor.RunAll(ctx, []tool.Call{{ID: "1", Name: "wait", Input: raw(`{}`)}}, nil)
+		}()
+		synctest.Wait()
+		cancel()
+		outcomes := <-done
+		if len(outcomes) != 1 || !outcomes[0].Cancelled || outcomes[0].TimedOut || !outcomes[0].Result.IsError {
 			t.Fatalf("outcomes = %#v", outcomes)
 		}
 	})

@@ -55,6 +55,31 @@ func TestBuildMessagesReconstructsToolTurn(t *testing.T) {
 	}
 }
 
+func TestBuildMessagesKeepsToolResultsInOriginalCallOrder(t *testing.T) {
+	events := []event.Event{
+		{Seq: 1, Turn: 1, Type: event.TypeAssistantToolCall, Payload: payload(t, event.AssistantToolCall{CallID: "slow", Name: "read", Input: json.RawMessage(`{"path":"slow"}`)})},
+		{Seq: 2, Turn: 1, Type: event.TypeAssistantToolCall, Payload: payload(t, event.AssistantToolCall{CallID: "fast", Name: "read", Input: json.RawMessage(`{"path":"fast"}`)})},
+		// Completion events may be persisted in completion order.
+		{Seq: 3, Turn: 1, Type: event.TypeToolResult, Payload: payload(t, event.ToolResult{CallID: "fast", Name: "read", Output: "second"})},
+		{Seq: 4, Turn: 1, Type: event.TypeToolResult, Payload: payload(t, event.ToolResult{CallID: "slow", Name: "read", Output: "first"})},
+	}
+	want := []provider.Message{
+		{Role: provider.RoleAssistant, Blocks: []provider.Block{
+			{Type: "tool_use", CallID: "slow", Name: "read", Input: `{"path":"slow"}`},
+			{Type: "tool_use", CallID: "fast", Name: "read", Input: `{"path":"fast"}`},
+		}},
+		{Role: provider.RoleTool, Blocks: []provider.Block{{Type: "tool_result", CallID: "slow", Name: "read", Output: "first"}}},
+		{Role: provider.RoleTool, Blocks: []provider.Block{{Type: "tool_result", CallID: "fast", Name: "read", Output: "second"}}},
+	}
+	got, err := event.BuildMessages(events, []int64{1, 2, 3, 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("messages = %#v, want %#v", got, want)
+	}
+}
+
 func payload(t *testing.T, v any) []byte {
 	t.Helper()
 	b, err := json.Marshal(v)

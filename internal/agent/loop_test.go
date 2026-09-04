@@ -5,13 +5,134 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/n1tishc/mulch/internal/agent"
 	"github.com/n1tishc/mulch/internal/event"
 	"github.com/n1tishc/mulch/internal/provider"
 	"github.com/n1tishc/mulch/internal/tool"
 )
+
+func TestRunCancelsStreamingProviderAndRecordsSession(t *testing.T) {
+	synctest.Test(t, testRunCancelsStreamingProviderAndRecordsSession)
+}
+
+func testRunCancelsStreamingProviderAndRecordsSession(t *testing.T) {
+	store := openStore(t)
+	llm := &cancellingLLM{started: make(chan struct{})}
+	ctx, cancel := context.WithCancel(t.Context())
+	type runResult struct {
+		id  string
+		err error
+	}
+	done := make(chan runResult, 1)
+	go func() {
+		id, err := agent.Run(ctx, agent.Dependencies{Store: store, LLM: llm, Model: "fake", Workdir: "."}, "wait", func(string) {})
+		done <- runResult{id: id, err: err}
+	}()
+	<-llm.started
+	started := time.Now()
+	cancel()
+	var result runResult
+	select {
+	case result = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not stop within two seconds")
+	}
+	if elapsed := time.Since(started); elapsed >= 2*time.Second {
+		t.Fatalf("cancellation took %s", elapsed)
+	}
+	if !errors.Is(result.err, context.Canceled) {
+		t.Fatalf("error = %v", result.err)
+	}
+	assertCancelledSession(t, store, result.id)
+	events, err := store.List(t.Context(), result.id, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response event.LLMResponse
+	if err := find(t, events, event.TypeLLMResponse).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.Cancelled {
+		t.Fatalf("llm.response = %#v", response)
+	}
+}
+
+func TestRunCancelsAllToolProcessGroupsAndRecordsSession(t *testing.T) {
+	workdir := t.TempDir()
+	store := openStore(t)
+	inputs := []provider.Block{
+		{Type: "tool_use", CallID: "one", Name: "bash", Input: `{"command":"echo $$ > one.pid; sleep 30"}`},
+		{Type: "tool_use", CallID: "two", Name: "bash", Input: `{"command":"echo $$ > two.pid; sleep 30"}`},
+	}
+	llm := &scriptedLLM{responses: []provider.Response{{Blocks: inputs, StopReason: "tool_calls", Model: "fake"}}}
+	executor := tool.NewExecutor([]tool.Tool{tool.NewBash(workdir)})
+	ctx, cancel := context.WithCancel(t.Context())
+	type runResult struct {
+		id  string
+		err error
+	}
+	done := make(chan runResult, 1)
+	go func() {
+		id, err := agent.Run(ctx, agent.Dependencies{Store: store, LLM: llm, Tools: executor, Model: "fake", Workdir: workdir}, "wait", func(string) {})
+		done <- runResult{id: id, err: err}
+	}()
+	pids := waitForPIDs(t, workdir, "one.pid", "two.pid")
+	groups := make([]int, len(pids))
+	for i, pid := range pids {
+		group, err := syscall.Getpgid(pid)
+		if err != nil {
+			t.Fatalf("get process group for %d: %v", pid, err)
+		}
+		groups[i] = group
+	}
+	started := time.Now()
+	cancel()
+	var result runResult
+	select {
+	case result = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not stop within two seconds")
+	}
+	if elapsed := time.Since(started); elapsed >= 2*time.Second {
+		t.Fatalf("cancellation took %s", elapsed)
+	}
+	if !errors.Is(result.err, context.Canceled) {
+		t.Fatalf("error = %v", result.err)
+	}
+	assertCancelledSession(t, store, result.id)
+	events, err := store.List(t.Context(), result.id, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cancelled int
+	for _, candidate := range events {
+		if candidate.Type != event.TypeToolResult {
+			continue
+		}
+		var payload event.ToolResult
+		if err := candidate.Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Cancelled && !payload.TimedOut {
+			cancelled++
+		}
+	}
+	if cancelled != 2 {
+		t.Fatalf("cancelled tool results = %d", cancelled)
+	}
+	for _, group := range groups {
+		if err := syscall.Kill(-group, 0); err == nil {
+			t.Fatalf("process group %d still exists", group)
+		}
+	}
+}
 
 func TestRunRecordsCompletedSessionAndExactRequest(t *testing.T) {
 	store := openStore(t)
@@ -189,6 +310,14 @@ type fakeLLM struct {
 	err      error
 }
 
+type cancellingLLM struct{ started chan struct{} }
+
+func (f *cancellingLLM) Stream(ctx context.Context, _ provider.Request, _ chan<- provider.Delta) (provider.Response, error) {
+	close(f.started)
+	<-ctx.Done()
+	return provider.Response{}, ctx.Err()
+}
+
 type scriptedLLM struct {
 	responses []provider.Response
 	requests  []provider.Request
@@ -280,4 +409,53 @@ func equalMessages(a, b []provider.Message) bool {
 		}
 	}
 	return true
+}
+
+func assertCancelledSession(t *testing.T, store *event.SQLiteStore, id string) {
+	t.Helper()
+	session, err := store.Session(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Status != event.StatusCancelled {
+		t.Fatalf("session status = %s", session.Status)
+	}
+	events, err := store.List(t.Context(), id, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var end event.SessionEnd
+	if err := find(t, events, event.TypeSessionEnd).Decode(&end); err != nil {
+		t.Fatal(err)
+	}
+	if end.Status != event.StatusCancelled {
+		t.Fatalf("session.end status = %s", end.Status)
+	}
+}
+
+func waitForPIDs(t *testing.T, workdir string, names ...string) []int {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	pids := make([]int, len(names))
+	for time.Now().Before(deadline) {
+		ready := true
+		for i, name := range names {
+			if pids[i] != 0 {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(workdir, name))
+			if err != nil {
+				ready = false
+				continue
+			}
+			pids[i], _ = strconv.Atoi(strings.TrimSpace(string(data)))
+			ready = ready && pids[i] != 0
+		}
+		if ready {
+			return pids
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("tool processes did not start: %v", pids)
+	return nil
 }

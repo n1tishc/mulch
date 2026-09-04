@@ -19,6 +19,7 @@ type Outcome struct {
 	Result    Result
 	Duration  time.Duration
 	Cancelled bool
+	TimedOut  bool
 }
 
 type EventKind string
@@ -35,6 +36,7 @@ type ExecutionEvent struct {
 	StartedAt time.Time
 	Duration  time.Duration
 	Cancelled bool
+	TimedOut  bool
 }
 
 type Executor struct {
@@ -92,6 +94,7 @@ func (e *Executor) RunAll(ctx context.Context, calls []Call, emit func(Execution
 				started := time.Now()
 				send(ExecutionEvent{Kind: EventStart, Call: call, StartedAt: started})
 				outcomes[i] = Outcome{Call: call, Result: Result{Output: "cancelled", IsError: true}, Duration: time.Since(started), Cancelled: true}
+				send(ExecutionEvent{Kind: EventResult, Call: call, Result: outcomes[i].Result, Duration: outcomes[i].Duration, Cancelled: true})
 				return
 			}
 			defer func() { <-sem }()
@@ -104,18 +107,17 @@ func (e *Executor) RunAll(ctx context.Context, calls []Call, emit func(Execution
 			} else {
 				result, err = candidate.Run(toolCtx, call.Input)
 			}
-			cancelled := toolCtx.Err() != nil
+			cancelled := ctx.Err() != nil
+			timedOut := !cancelled && toolCtx.Err() == context.DeadlineExceeded
 			cancel()
 			if err != nil {
 				result = Result{Output: err.Error(), IsError: true}
 			}
 			duration := time.Since(started)
-			outcomes[i] = Outcome{Call: call, Result: result, Duration: duration, Cancelled: cancelled}
+			outcomes[i] = Outcome{Call: call, Result: result, Duration: duration, Cancelled: cancelled, TimedOut: timedOut}
+			send(ExecutionEvent{Kind: EventResult, Call: call, Result: result, Duration: duration, Cancelled: cancelled, TimedOut: timedOut})
 		}()
 	}
 	wg.Wait()
-	for _, outcome := range outcomes {
-		send(ExecutionEvent{Kind: EventResult, Call: outcome.Call, Result: outcome.Result, Duration: outcome.Duration, Cancelled: outcome.Cancelled})
-	}
 	return outcomes
 }

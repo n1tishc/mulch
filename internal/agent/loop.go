@@ -165,7 +165,7 @@ func Run(ctx context.Context, deps Dependencies, task string, emit func(string))
 				value := execution.Result.SourceTS
 				sourceTS = &value
 			}
-			toolEventErr = appendPayload(event.TypeToolResult, turn, true, event.ToolResult{CallID: execution.Call.ID, Name: execution.Call.Name, Output: execution.Result.Output, IsError: execution.Result.IsError, Cancelled: execution.Cancelled, DurationMS: execution.Duration.Milliseconds(), SourceTS: sourceTS})
+			toolEventErr = appendPayload(event.TypeToolResult, turn, true, event.ToolResult{CallID: execution.Call.ID, Name: execution.Call.Name, Output: execution.Result.Output, IsError: execution.Result.IsError, Cancelled: execution.Cancelled, TimedOut: execution.TimedOut, DurationMS: execution.Duration.Milliseconds(), SourceTS: sourceTS})
 		})
 		if toolEventErr != nil {
 			return fail(toolEventErr, turn, totalInput, totalOutput)
