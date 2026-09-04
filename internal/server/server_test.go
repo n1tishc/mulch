@@ -89,6 +89,43 @@ func TestRecordedSessionReadAPIAndEmbeddedViewer(t *testing.T) {
 	})
 }
 
+func TestSessionsAPIKeepsLiveRootsFirstAndNestsBranchSummaries(t *testing.T) {
+	store, err := event.Open(t.Context(), filepath.Join(t.TempDir(), "mulch.db"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	created := time.Date(2026, 9, 4, 1, 0, 0, 0, time.UTC)
+	for _, session := range []event.Session{
+		{ID: "done", Task: "finished", CreatedAt: created},
+		{ID: "live", Task: "running", CreatedAt: created.Add(time.Minute)},
+		{ID: "child", ParentID: "live", Task: "branch", CreatedAt: created.Add(2 * time.Minute)},
+	} {
+		if err := store.CreateSession(t.Context(), session); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.EndSession(t.Context(), "done", event.StatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	health, _ := json.Marshal(event.ScoreHealth{TurnScored: 3, Composite: 62, LatencyMS: 18})
+	if _, err := store.Append(t.Context(), event.Event{SessionID: "live", Turn: 3, Type: event.TypeScoreHealth, Payload: health}); err != nil {
+		t.Fatal(err)
+	}
+
+	var got []SessionSummary
+	getJSON(t, New(store).Handler(), "/api/sessions", &got)
+	if len(got) != 2 || got[0].ID != "live" || got[1].ID != "done" {
+		t.Fatalf("root order = %#v", got)
+	}
+	if got[0].Turn != 3 || got[0].Health == nil || *got[0].Health != 62 {
+		t.Fatalf("live summary = %#v", got[0])
+	}
+	if len(got[0].Children) != 1 || got[0].Children[0].ID != "child" {
+		t.Fatalf("children = %#v", got[0].Children)
+	}
+}
+
 type fakeControl struct {
 	mu        sync.Mutex
 	started   StartRequest

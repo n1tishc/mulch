@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -54,6 +55,15 @@ type Metrics struct {
 	Sessions int `json:"sessions"`
 	Events   int `json:"events"`
 	Running  int `json:"running_sessions"`
+}
+
+// SessionSummary is the live navigation model exposed by the sessions API.
+// Session is embedded to keep the original wire fields backward compatible.
+type SessionSummary struct {
+	event.Session
+	Turn     int              `json:"Turn"`
+	Health   *float64         `json:"Health,omitempty"`
+	Children []SessionSummary `json:"Children,omitempty"`
 }
 
 type Server struct {
@@ -278,7 +288,48 @@ func (s *Server) Serve(ctx context.Context, address string) error {
 
 func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 	items, err := s.store.Sessions(r.Context())
-	writeJSON(w, items, err)
+	if err != nil {
+		writeJSON(w, nil, err)
+		return
+	}
+	byParent := make(map[string][]SessionSummary)
+	for _, item := range items {
+		summary := SessionSummary{Session: item}
+		events, listErr := s.store.List(r.Context(), item.ID, 1)
+		if listErr != nil {
+			writeJSON(w, nil, listErr)
+			return
+		}
+		for _, recorded := range events {
+			if recorded.Turn > summary.Turn {
+				summary.Turn = recorded.Turn
+			}
+			if recorded.Type == event.TypeScoreHealth {
+				var health event.ScoreHealth
+				if recorded.Decode(&health) == nil {
+					value := health.Composite
+					summary.Health = &value
+				}
+			}
+		}
+		byParent[item.ParentID] = append(byParent[item.ParentID], summary)
+	}
+	var build func(string) []SessionSummary
+	build = func(parent string) []SessionSummary {
+		result := byParent[parent]
+		for i := range result {
+			result[i].Children = build(result[i].ID)
+		}
+		sort.SliceStable(result, func(i, j int) bool {
+			iLive, jLive := result[i].Status == event.StatusRunning, result[j].Status == event.StatusRunning
+			if iLive != jLive {
+				return iLive
+			}
+			return result[i].CreatedAt.After(result[j].CreatedAt)
+		})
+		return result
+	}
+	writeJSON(w, build(""), nil)
 }
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
