@@ -30,6 +30,7 @@ const (
 	TypeToolStart         Type = "tool.start"
 	TypeToolResult        Type = "tool.result"
 	TypeSessionEnd        Type = "session.end"
+	TypeContextVisibility Type = "context.visibility"
 )
 
 type Status string
@@ -134,4 +135,13 @@ type SessionEnd struct {
 	TotalInputTokens  int    `json:"total_input_tokens"`
 	TotalOutputTokens int    `json:"total_output_tokens"`
 	WallMS            int64  `json:"wall_ms"`
+}
+type VisibilityChange struct {
+	Seq  int64 `json:"seq"`
+	From bool  `json:"from"`
+	To   bool  `json:"to"`
+}
+type ContextVisibility struct {
+	Changes []VisibilityChange `json:"changes"`
+	Reason  string             `json:"reason"`
 }

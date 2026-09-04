@@ -151,9 +151,6 @@ func (s *SQLiteStore) executeWrite(conn *sql.Conn, req writeRequest) writeResult
 		err = tx.QueryRowContext(req.ctx, `INSERT INTO events(session_id,seq,turn,type,payload,tokens,visible,image_ref,created_at) VALUES(?,(SELECT COALESCE(MAX(seq),0)+1 FROM events WHERE session_id=?),?,?,?,?,?,?,?) RETURNING id,seq`, e.SessionID, e.SessionID, e.Turn, e.Type, string(e.Payload), e.Tokens, boolInt(e.Visible), nullableString(e.ImageRef), e.CreatedAt.Format(time.RFC3339Nano)).Scan(&id, &seq)
 		if err == nil {
 			e.ID, e.Seq = id, seq
-			_, err = tx.ExecContext(req.ctx, `INSERT INTO event_visibility(session_id,event_seq,effective_seq,visible) VALUES(?,?,?,?)`, e.SessionID, e.Seq, e.Seq, boolInt(e.Visible))
-		}
-		if err == nil {
 			err = tx.Commit()
 		}
 		if err == nil {
@@ -193,11 +190,12 @@ func (s *SQLiteStore) executeWrite(conn *sql.Conn, req writeRequest) writeResult
 			return writeResult{err: err}
 		}
 		defer tx.Rollback()
-		var effectiveSeq int64
-		if err := tx.QueryRowContext(req.ctx, `SELECT COALESCE(MAX(seq),0) FROM events WHERE session_id=?`, req.sessionID).Scan(&effectiveSeq); err != nil {
-			return writeResult{err: err}
-		}
+		changes := make([]VisibilityChange, 0, len(req.seqs))
 		for _, seq := range req.seqs {
+			var current int
+			if err := tx.QueryRowContext(req.ctx, `SELECT visible FROM events WHERE session_id=? AND seq=?`, req.sessionID, seq).Scan(&current); err != nil {
+				return writeResult{err: fmt.Errorf("event %s/%d: %w", req.sessionID, seq, err)}
+			}
 			result, updateErr := tx.ExecContext(req.ctx, `UPDATE events SET visible=? WHERE session_id=? AND seq=?`, boolInt(req.visible), req.sessionID, seq)
 			if updateErr != nil {
 				return writeResult{err: updateErr}
@@ -209,11 +207,24 @@ func (s *SQLiteStore) executeWrite(conn *sql.Conn, req writeRequest) writeResult
 			if affected == 0 {
 				return writeResult{err: fmt.Errorf("event %s/%d: %w", req.sessionID, seq, sql.ErrNoRows)}
 			}
-			if _, updateErr = tx.ExecContext(req.ctx, `INSERT INTO event_visibility(session_id,event_seq,effective_seq,visible) VALUES(?,?,?,?)`, req.sessionID, seq, effectiveSeq, boolInt(req.visible)); updateErr != nil {
-				return writeResult{err: updateErr}
-			}
+			changes = append(changes, VisibilityChange{Seq: seq, From: current != 0, To: req.visible})
 		}
-		return writeResult{err: tx.Commit()}
+		payload, err := json.Marshal(ContextVisibility{Changes: changes, Reason: "store visibility update"})
+		if err != nil {
+			return writeResult{err: err}
+		}
+		var marker Event
+		marker.SessionID, marker.Type, marker.Payload, marker.CreatedAt = req.sessionID, TypeContextVisibility, payload, time.Now().UTC()
+		if err = tx.QueryRowContext(req.ctx, `INSERT INTO events(session_id,seq,turn,type,payload,visible,created_at) VALUES(?,(SELECT COALESCE(MAX(seq),0)+1 FROM events WHERE session_id=?),0,?,?,0,?) RETURNING id,seq`, req.sessionID, req.sessionID, marker.Type, string(marker.Payload), marker.CreatedAt.Format(time.RFC3339Nano)).Scan(&marker.ID, &marker.Seq); err != nil {
+			return writeResult{err: err}
+		}
+		if err = tx.Commit(); err != nil {
+			return writeResult{err: err}
+		}
+		if s.publisher != nil {
+			s.publisher.Publish(marker)
+		}
+		return writeResult{}
 	default:
 		return writeResult{err: errors.New("unknown event-store write")}
 	}
@@ -234,6 +245,39 @@ func (s *SQLiteStore) executeBranch(conn *sql.Conn, req writeRequest) writeResul
 	if req.atSeq < 0 || req.atSeq > maxSeq {
 		return writeResult{err: fmt.Errorf("fork sequence %d is outside session history (0-%d)", req.atSeq, maxSeq)}
 	}
+	rows, err := conn.QueryContext(req.ctx, `SELECT id,session_id,seq,turn,type,payload,tokens,visible,image_ref,created_at FROM events WHERE session_id=? ORDER BY seq`, req.sessionID)
+	if err != nil {
+		return writeResult{err: err}
+	}
+	var history []Event
+	for rows.Next() {
+		candidate, scanErr := scanEvent(rows)
+		if scanErr != nil {
+			rows.Close()
+			return writeResult{err: scanErr}
+		}
+		history = append(history, candidate)
+	}
+	if err = rows.Close(); err != nil {
+		return writeResult{err: err}
+	}
+	visibleAtFork := make(map[int64]bool, len(history))
+	for _, candidate := range history {
+		visibleAtFork[candidate.Seq] = candidate.Visible
+	}
+	for i := len(history) - 1; i >= 0; i-- {
+		candidate := history[i]
+		if candidate.Seq <= req.atSeq || candidate.Type != TypeContextVisibility {
+			continue
+		}
+		var marker ContextVisibility
+		if err = candidate.Decode(&marker); err != nil {
+			return writeResult{err: fmt.Errorf("decode visibility event %d: %w", candidate.Seq, err)}
+		}
+		for _, change := range marker.Changes {
+			visibleAtFork[change.Seq] = change.From
+		}
+	}
 	child := req.session
 	child.ParentID = parent.ID
 	child.ForkSeq = &req.atSeq
@@ -248,28 +292,22 @@ func (s *SQLiteStore) executeBranch(conn *sql.Conn, req writeRequest) writeResul
 	if _, err = tx.ExecContext(req.ctx, `INSERT INTO sessions(id,parent_id,fork_seq,task,model,context_window,workdir,created_at,status) VALUES(?,?,?,?,?,?,?,?,?)`, child.ID, child.ParentID, req.atSeq, child.Task, child.Model, child.ContextWindow, child.Workdir, child.CreatedAt.Format(time.RFC3339Nano), StatusRunning); err != nil {
 		return writeResult{err: err}
 	}
-	_, err = tx.ExecContext(req.ctx, `INSERT INTO events(session_id,seq,turn,type,payload,tokens,visible,image_ref,created_at)
-		SELECT ?,ROW_NUMBER() OVER (ORDER BY e.seq),e.turn,e.type,e.payload,e.tokens,1,e.image_ref,e.created_at FROM events e
-		WHERE e.session_id=? AND e.seq<=? AND COALESCE(
-		  (SELECT v.visible FROM event_visibility v WHERE v.session_id=e.session_id AND v.event_seq=e.seq AND v.effective_seq<=? ORDER BY v.effective_seq DESC,v.id DESC LIMIT 1),
-		  e.visible
-		)=1 ORDER BY e.seq`, child.ID, parent.ID, req.atSeq, req.atSeq)
-	if err != nil {
-		return writeResult{err: err}
-	}
-	var copied int64
-	if err = tx.QueryRowContext(req.ctx, `SELECT COUNT(*) FROM events WHERE session_id=?`, child.ID).Scan(&copied); err != nil {
-		return writeResult{err: err}
-	}
 	startPayload, err := json.Marshal(SessionStart{Task: child.Task, Model: child.Model, Workdir: child.Workdir, ParentID: child.ParentID, ForkSeq: child.ForkSeq})
 	if err != nil {
 		return writeResult{err: err}
 	}
-	if _, err = tx.ExecContext(req.ctx, `INSERT INTO events(session_id,seq,turn,type,payload,visible,created_at) VALUES(?,?,?,?,?,0,?)`, child.ID, copied+1, 0, TypeSessionStart, string(startPayload), child.CreatedAt.Format(time.RFC3339Nano)); err != nil {
+	if _, err = tx.ExecContext(req.ctx, `INSERT INTO events(session_id,seq,turn,type,payload,visible,created_at) VALUES(?,1,0,?,?,0,?)`, child.ID, TypeSessionStart, string(startPayload), child.CreatedAt.Format(time.RFC3339Nano)); err != nil {
 		return writeResult{err: err}
 	}
-	if _, err = tx.ExecContext(req.ctx, `INSERT INTO event_visibility(session_id,event_seq,effective_seq,visible) SELECT session_id,seq,seq,visible FROM events WHERE session_id=?`, child.ID); err != nil {
-		return writeResult{err: err}
+	childSeq := int64(2)
+	for _, candidate := range history {
+		if candidate.Seq > req.atSeq || !visibleAtFork[candidate.Seq] {
+			continue
+		}
+		if _, err = tx.ExecContext(req.ctx, `INSERT INTO events(session_id,seq,turn,type,payload,tokens,visible,image_ref,created_at) VALUES(?,?,?,?,?,?,1,?,?)`, child.ID, childSeq, candidate.Turn, candidate.Type, string(candidate.Payload), candidate.Tokens, nullableString(candidate.ImageRef), candidate.CreatedAt.Format(time.RFC3339Nano)); err != nil {
+			return writeResult{err: err}
+		}
+		childSeq++
 	}
 	if err = tx.Commit(); err != nil {
 		return writeResult{err: err}
@@ -417,6 +455,29 @@ func (s *SQLiteStore) Session(ctx context.Context, id string) (Session, error) {
 }
 
 type scanner interface{ Scan(...any) error }
+
+func scanEvent(row scanner) (Event, error) {
+	var candidate Event
+	var payload, created string
+	var tokens sql.NullInt64
+	var imageRef sql.NullString
+	var visible int
+	if err := row.Scan(&candidate.ID, &candidate.SessionID, &candidate.Seq, &candidate.Turn, &candidate.Type, &payload, &tokens, &visible, &imageRef, &created); err != nil {
+		return candidate, err
+	}
+	candidate.Payload = []byte(payload)
+	if tokens.Valid {
+		value := int(tokens.Int64)
+		candidate.Tokens = &value
+	}
+	candidate.Visible, candidate.ImageRef = visible != 0, imageRef.String
+	parsed, err := time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return candidate, err
+	}
+	candidate.CreatedAt = parsed
+	return candidate, nil
+}
 
 func scanSession(row scanner) (Session, error) {
 	var x Session

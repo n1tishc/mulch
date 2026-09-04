@@ -27,11 +27,11 @@ func TestBranchCopiesOnlyVisibleHistoryAtForkPoint(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	child, err := store.Branch(ctx, "parent", 4)
+	child, err := store.Branch(ctx, "parent", 5)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if child.ParentID != "parent" || child.ForkSeq == nil || *child.ForkSeq != 4 {
+	if child.ParentID != "parent" || child.ForkSeq == nil || *child.ForkSeq != 5 {
 		t.Fatalf("branch metadata = %+v", child)
 	}
 	copied, err := store.List(ctx, child.ID, 1)
@@ -45,7 +45,7 @@ func TestBranchCopiesOnlyVisibleHistoryAtForkPoint(t *testing.T) {
 			if err := candidate.Decode(&start); err != nil {
 				t.Fatal(err)
 			}
-			if start.ParentID != "parent" || start.ForkSeq == nil || *start.ForkSeq != 4 {
+			if start.ParentID != "parent" || start.ForkSeq == nil || *start.ForkSeq != 5 {
 				t.Fatalf("branch start = %+v", start)
 			}
 			continue
@@ -60,7 +60,7 @@ func TestBranchCopiesOnlyVisibleHistoryAtForkPoint(t *testing.T) {
 		t.Fatalf("copied history = %v, want %v", texts, want)
 	}
 	parent, err := store.List(ctx, "parent", 1)
-	if err != nil || len(parent) != 4 {
+	if err != nil || len(parent) != 5 {
 		t.Fatalf("parent history changed: len=%d err=%v", len(parent), err)
 	}
 }
@@ -76,8 +76,8 @@ func TestBranchUsesVisibilityAtRequestedSequence(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The visibility change is effective at the current log sequence (5), so a
-	// historical fork at 3 still sees event 2 while a fork at 5 does not.
+	// SetVisible appends the transition as event 6. A fork before that marker
+	// sees the old context; a fork at the marker sees the updated context.
 	if err := store.SetVisible(ctx, "parent", []int64{2}, false); err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestBranchUsesVisibilityAtRequestedSequence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	later, err := store.Branch(ctx, "parent", 5)
+	later, err := store.Branch(ctx, "parent", 6)
 	if err != nil {
 		t.Fatal(err)
 	}
