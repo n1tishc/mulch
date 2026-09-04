@@ -23,7 +23,7 @@ func TestBranchCopiesOnlyVisibleHistoryAtForkPoint(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := store.SetVisible(ctx, "parent", []int64{2}, false); err != nil {
+	if err := store.SetVisibleBecause(ctx, "parent", []int64{2}, false, "replace stale history with compacted summary", "compactor"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -78,7 +78,7 @@ func TestBranchUsesVisibilityAtRequestedSequence(t *testing.T) {
 	}
 	// SetVisible appends the transition as event 6. A fork before that marker
 	// sees the old context; a fork at the marker sees the updated context.
-	if err := store.SetVisible(ctx, "parent", []int64{2}, false); err != nil {
+	if err := store.SetVisibleBecause(ctx, "parent", []int64{2}, false, "prune stale event", "test-pruner"); err != nil {
 		t.Fatal(err)
 	}
 	earlier, err := store.Branch(ctx, "parent", 3)

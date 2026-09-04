@@ -144,4 +144,5 @@ type VisibilityChange struct {
 type ContextVisibility struct {
 	Changes []VisibilityChange `json:"changes"`
 	Reason  string             `json:"reason"`
+	By      string             `json:"by"`
 }

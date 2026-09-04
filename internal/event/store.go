@@ -41,6 +41,8 @@ type writeRequest struct {
 	atSeq     int64
 	seqs      []int64
 	visible   bool
+	reason    string
+	by        string
 	reply     chan writeResult
 }
 type writeResult struct {
@@ -209,7 +211,7 @@ func (s *SQLiteStore) executeWrite(conn *sql.Conn, req writeRequest) writeResult
 			}
 			changes = append(changes, VisibilityChange{Seq: seq, From: current != 0, To: req.visible})
 		}
-		payload, err := json.Marshal(ContextVisibility{Changes: changes, Reason: "store visibility update"})
+		payload, err := json.Marshal(ContextVisibility{Changes: changes, Reason: req.reason, By: req.by})
 		if err != nil {
 			return writeResult{err: err}
 		}
@@ -398,7 +400,14 @@ func (s *SQLiteStore) Branch(ctx context.Context, parentID string, atSeq int64) 
 }
 
 func (s *SQLiteStore) SetVisible(ctx context.Context, sessionID string, seqs []int64, visible bool) error {
-	result, err := s.write(ctx, writeRequest{kind: writeSetVisible, sessionID: sessionID, seqs: append([]int64(nil), seqs...), visible: visible})
+	return s.SetVisibleBecause(ctx, sessionID, seqs, visible, "explicit visibility change", "event.Store.SetVisible")
+}
+
+func (s *SQLiteStore) SetVisibleBecause(ctx context.Context, sessionID string, seqs []int64, visible bool, reason, by string) error {
+	if reason == "" || by == "" {
+		return errors.New("visibility reason and actor are required")
+	}
+	result, err := s.write(ctx, writeRequest{kind: writeSetVisible, sessionID: sessionID, seqs: append([]int64(nil), seqs...), visible: visible, reason: reason, by: by})
 	if err != nil {
 		return err
 	}
