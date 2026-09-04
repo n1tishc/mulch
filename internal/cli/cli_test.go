@@ -21,7 +21,7 @@ func TestResumeReconstructsVisibleContextAndAppendsHistory(t *testing.T) {
 	if err := cli.Execute(t.Context(), []string{"run", "--db", db, "hello"}, opts); err != nil {
 		t.Fatal(err)
 	}
-	id := strings.Fields(runErr.String())[1]
+	id := sessionID(t, runErr.String())
 	store, err := event.Open(context.Background(), db, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -66,12 +66,12 @@ func TestBranchTreeSessionsAndLabelCommands(t *testing.T) {
 	if err := cli.Execute(t.Context(), []string{"run", "--db", db, "root task"}, cli.Options{Stdout: &bytes.Buffer{}, Stderr: &runErr, Getenv: testGetenv, LLMFactory: func(string, string) provider.LLM { return commandLLM{} }}); err != nil {
 		t.Fatal(err)
 	}
-	root := strings.Fields(runErr.String())[1]
+	root := sessionID(t, runErr.String())
 	var branchErr bytes.Buffer
 	if err := cli.Execute(t.Context(), []string{"branch", root, "--at", "3", "fork task", "--db", db}, cli.Options{Stdout: &bytes.Buffer{}, Stderr: &branchErr, Getenv: testGetenv, LLMFactory: func(string, string) provider.LLM { return commandLLM{} }}); err != nil {
 		t.Fatal(err)
 	}
-	child := strings.Fields(branchErr.String())[1]
+	child := sessionID(t, branchErr.String())
 	if err := cli.Execute(t.Context(), []string{"label", "--db", db, child, "experiment"}, cli.Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Getenv: testGetenv}); err != nil {
 		t.Fatal(err)
 	}
@@ -105,11 +105,10 @@ func TestRunStreamsAnswerAndPrintsDurableSessionID(t *testing.T) {
 	if stdout.String() != "streamed answer" {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
-	fields := strings.Fields(stderr.String())
-	if len(fields) != 2 || fields[0] != "session" {
+	id := sessionID(t, stderr.String())
+	if !strings.Contains(stderr.String(), "[t1] health") {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
-	id := fields[1]
 	store, err := event.Open(context.Background(), db, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -180,7 +179,7 @@ func TestReplayIsOfflineAndDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := strings.Fields(runErr.String())[1]
+	id := sessionID(t, runErr.String())
 
 	var first, second bytes.Buffer
 	for _, out := range []*bytes.Buffer{&first, &second} {
@@ -228,6 +227,18 @@ func TestReplayIsOfflineAndDeterministic(t *testing.T) {
 	if len(deltas) != 2 || deltas[0] != "streamed " || deltas[1] != "answer" {
 		t.Fatalf("replayed deltas = %#v", deltas)
 	}
+}
+
+func sessionID(t *testing.T, output string) string {
+	t.Helper()
+	fields := strings.Fields(output)
+	for i := range fields {
+		if fields[i] == "session" && i+1 < len(fields) {
+			return fields[i+1]
+		}
+	}
+	t.Fatalf("missing session ID in %q", output)
+	return ""
 }
 
 func contains(types []event.Type, want event.Type) bool {

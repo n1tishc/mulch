@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/n1tishc/mulch/internal/event"
+	"github.com/n1tishc/mulch/internal/hook"
 	"github.com/n1tishc/mulch/internal/prompt"
 	"github.com/n1tishc/mulch/internal/provider"
 	"github.com/n1tishc/mulch/internal/tool"
@@ -32,6 +33,8 @@ type Dependencies struct {
 	Tools          *tool.Executor
 	Model, Workdir string
 	MaxTurns       int
+	ContextWindow  int
+	Hooks          []hook.Hook
 }
 
 func Run(ctx context.Context, deps Dependencies, task string, emit func(string)) (string, error) {
@@ -49,7 +52,7 @@ func Run(ctx context.Context, deps Dependencies, task string, emit func(string))
 	if emit == nil {
 		emit = func(string) {}
 	}
-	if err = deps.Store.CreateSession(ctx, event.Session{ID: id, Task: task, Model: deps.Model, Workdir: deps.Workdir}); err != nil {
+	if err = deps.Store.CreateSession(ctx, event.Session{ID: id, Task: task, Model: deps.Model, Workdir: deps.Workdir, ContextWindow: deps.ContextWindow}); err != nil {
 		return "", err
 	}
 	appendPayload := func(typ event.Type, turn int, visible bool, payload any) error {
@@ -61,6 +64,7 @@ func Run(ctx context.Context, deps Dependencies, task string, emit func(string))
 		return appendErr
 	}
 	finish := func(cause error, status event.Status, turns, inputTokens, outputTokens int) error {
+		waitForHooks(deps.Hooks)
 		endErr := appendPayload(event.TypeSessionEnd, turns, false, event.SessionEnd{Status: status, Turns: turns, TotalInputTokens: inputTokens, TotalOutputTokens: outputTokens, WallMS: time.Since(started).Milliseconds()})
 		if endErr != nil && status == event.StatusCompleted {
 			status = event.StatusFailed
@@ -143,6 +147,7 @@ func continueSession(ctx context.Context, deps Dependencies, id string, started 
 		return appendPayload(ctx, deps.Store, id, typ, turn, visible, payload)
 	}
 	finish := func(cause error, status event.Status, turns, inputTokens, outputTokens int) error {
+		waitForHooks(deps.Hooks)
 		endErr := appendPayload(event.TypeSessionEnd, turns, false, event.SessionEnd{Status: status, Turns: turns, TotalInputTokens: inputTokens, TotalOutputTokens: outputTokens, WallMS: time.Since(started).Milliseconds()})
 		if endErr != nil && status == event.StatusCompleted {
 			status = event.StatusFailed
@@ -222,6 +227,9 @@ func continueSession(ctx context.Context, deps Dependencies, id string, started 
 			}
 		}
 		if len(calls) == 0 {
+			if err = appendPayload(event.TypeTurnCompleted, turn, false, event.TurnCompleted{}); err != nil {
+				return fail(err, turn, totalInput, totalOutput)
+			}
 			return id, finish(nil, event.StatusCompleted, turn, totalInput, totalOutput)
 		}
 		if deps.Tools == nil {
@@ -249,8 +257,21 @@ func continueSession(ctx context.Context, deps Dependencies, id string, started 
 		if ctx.Err() != nil {
 			return fail(ctx.Err(), turn, totalInput, totalOutput)
 		}
+		if err = appendPayload(event.TypeTurnCompleted, turn, false, event.TurnCompleted{}); err != nil {
+			return fail(err, turn, totalInput, totalOutput)
+		}
 	}
 	return fail(fmt.Errorf("maximum turns (%d) reached", deps.MaxTurns), lastTurn, totalInput, totalOutput)
+}
+
+func waitForHooks(hooks []hook.Hook) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, extension := range hooks {
+		if waiter, ok := extension.(hook.Waiter); ok {
+			_ = waiter.Wait(ctx)
+		}
+	}
 }
 
 func appendPayload(ctx context.Context, store Store, id string, typ event.Type, turn int, visible bool, payload any) error {

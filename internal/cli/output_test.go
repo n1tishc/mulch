@@ -35,6 +35,16 @@ func TestReplayTerminalFallsBackToRecordedAssistantMessage(t *testing.T) {
 	}
 }
 
+func TestHealthPublisherWritesCompactAvailableScores(t *testing.T) {
+	saturation, staleness := .41, .12
+	e := event.Event{Turn: 3, Type: event.TypeScoreHealth, Payload: outputPayload(t, event.ScoreHealth{TurnScored: 3, Composite: 72, Saturation: &saturation, Staleness: &staleness, LatencyMS: 640})}
+	var got bytes.Buffer
+	(&healthPublisher{writer: &got}).Publish(e)
+	if want := "\n[t3] health 72 | sat 0.41 stale 0.12 (async 640ms)\n"; got.String() != want {
+		t.Fatalf("output = %q, want %q", got.String(), want)
+	}
+}
+
 func outputPayload(t *testing.T, value any) json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(value)

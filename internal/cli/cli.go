@@ -11,9 +11,10 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/n1tishc/mulch/internal/agent"
-	"github.com/n1tishc/mulch/internal/bus"
 	"github.com/n1tishc/mulch/internal/event"
+	"github.com/n1tishc/mulch/internal/hook"
 	"github.com/n1tishc/mulch/internal/provider"
+	"github.com/n1tishc/mulch/internal/score"
 	"github.com/n1tishc/mulch/internal/tool"
 )
 
@@ -110,11 +111,15 @@ func continueCLI(ctx context.Context, dbPath, id, prompt string, jsonMode bool, 
 	if key == "" {
 		return errors.New("MULCH_PROVIDER_API_KEY is required (set it in the environment or .env)")
 	}
-	var publisher event.Publisher
+	publisher := &fanoutPublisher{}
 	var jsonOutput *jsonlPublisher
+	var healthOutput *healthPublisher
 	if jsonMode {
 		jsonOutput = &jsonlPublisher{writer: opts.Stdout}
-		publisher = jsonOutput
+		publisher.Add(jsonOutput)
+	} else {
+		healthOutput = &healthPublisher{writer: opts.Stderr}
+		publisher.Add(healthOutput)
 	}
 	store, err := event.Open(context.WithoutCancel(ctx), dbPath, publisher)
 	if err != nil {
@@ -126,16 +131,25 @@ func continueCLI(ctx context.Context, dbPath, id, prompt string, jsonMode bool, 
 		return fmt.Errorf("load session: %w", err)
 	}
 	executor := tool.NewExecutor([]tool.Tool{tool.NewRead(session.Workdir), tool.NewWrite(session.Workdir), tool.NewEdit(session.Workdir), tool.NewBash(session.Workdir)})
+	history, err := store.List(ctx, id, 1)
+	if err != nil {
+		return err
+	}
+	scoring := score.NewRunner(store, session, []score.Scorer{score.Saturation{}, score.Staleness{}}, history...)
+	publisher.Add(scoring)
 	emit := func(text string) { _, _ = io.WriteString(opts.Stdout, text) }
 	if jsonMode {
 		emit = func(string) {}
 	}
-	_, runErr := agent.Resume(ctx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: session.Model, Workdir: session.Workdir}, id, prompt, emit)
+	_, runErr := agent.Resume(ctx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: session.Model, Workdir: session.Workdir, ContextWindow: session.ContextWindow, Hooks: []hook.Hook{scoring}}, id, prompt, emit)
 	if !jsonMode {
 		_, _ = fmt.Fprintf(opts.Stderr, "\nsession %s\n", id)
 	}
 	if jsonOutput != nil {
 		return errors.Join(runErr, jsonOutput.Err())
+	}
+	if healthOutput != nil {
+		return errors.Join(runErr, healthOutput.err)
 	}
 	return runErr
 }
@@ -233,6 +247,7 @@ func run(ctx context.Context, args []string, opts Options) error {
 	flags.SetOutput(opts.Stderr)
 	workdir := flags.String("workdir", ".", "working directory")
 	model := flags.String("model", envOr(opts.Getenv, "MULCH_MODEL", defaultModel), "model")
+	contextWindow := flags.Int("context-window", 200000, "model context window in tokens")
 	dbPath := flags.String("db", envOr(opts.Getenv, "MULCH_DB", defaultDB()), "event database")
 	jsonMode := flags.Bool("json", false, "write committed events as JSONL")
 	if err := flags.Parse(args); err != nil {
@@ -248,13 +263,15 @@ func run(ctx context.Context, args []string, opts Options) error {
 	if err := os.MkdirAll(filepath.Dir(*dbPath), 0700); err != nil {
 		return fmt.Errorf("create database directory: %w", err)
 	}
-	var publisher event.Publisher
+	publisher := &fanoutPublisher{}
 	var jsonOutput *jsonlPublisher
+	var healthOutput *healthPublisher
 	if *jsonMode {
 		jsonOutput = &jsonlPublisher{writer: opts.Stdout}
-		publisher = jsonOutput
+		publisher.Add(jsonOutput)
 	} else {
-		publisher = bus.New()
+		healthOutput = &healthPublisher{writer: opts.Stderr}
+		publisher.Add(healthOutput)
 	}
 	store, err := event.Open(context.WithoutCancel(ctx), *dbPath, publisher)
 	if err != nil {
@@ -262,11 +279,13 @@ func run(ctx context.Context, args []string, opts Options) error {
 	}
 	defer store.Close()
 	executor := tool.NewExecutor([]tool.Tool{tool.NewRead(*workdir), tool.NewWrite(*workdir), tool.NewEdit(*workdir), tool.NewBash(*workdir)})
+	scoring := score.NewRunner(store, event.Session{ContextWindow: *contextWindow}, []score.Scorer{score.Saturation{}, score.Staleness{}})
+	publisher.Add(scoring)
 	emit := func(text string) { _, _ = io.WriteString(opts.Stdout, text) }
 	if *jsonMode {
 		emit = func(string) {}
 	}
-	id, runErr := agent.Run(ctx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: *model, Workdir: *workdir}, flags.Arg(0), emit)
+	id, runErr := agent.Run(ctx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: *model, Workdir: *workdir, ContextWindow: *contextWindow, Hooks: []hook.Hook{scoring}}, flags.Arg(0), emit)
 	if id != "" {
 		if !*jsonMode {
 			_, _ = fmt.Fprintf(opts.Stderr, "\nsession %s\n", id)
@@ -274,6 +293,9 @@ func run(ctx context.Context, args []string, opts Options) error {
 	}
 	if jsonOutput != nil {
 		return errors.Join(runErr, jsonOutput.Err())
+	}
+	if healthOutput != nil {
+		return errors.Join(runErr, healthOutput.err)
 	}
 	return runErr
 }

@@ -4,9 +4,29 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/n1tishc/mulch/internal/event"
 )
+
+type fanoutPublisher struct {
+	mu      sync.RWMutex
+	targets []event.Publisher
+}
+
+func (p *fanoutPublisher) Add(target event.Publisher) {
+	p.mu.Lock()
+	p.targets = append(p.targets, target)
+	p.mu.Unlock()
+}
+func (p *fanoutPublisher) Publish(candidate event.Event) {
+	p.mu.RLock()
+	targets := append([]event.Publisher(nil), p.targets...)
+	p.mu.RUnlock()
+	for _, target := range targets {
+		target.Publish(candidate)
+	}
+}
 
 func writeJSONL(w io.Writer, events []event.Event) error {
 	encoder := json.NewEncoder(w)
@@ -22,6 +42,38 @@ func writeJSONL(w io.Writer, events []event.Event) error {
 type jsonlPublisher struct {
 	writer io.Writer
 	err    error
+}
+
+type healthPublisher struct {
+	writer io.Writer
+	err    error
+}
+
+func (p *healthPublisher) Publish(candidate event.Event) {
+	if p.err != nil || candidate.Type != event.TypeScoreHealth {
+		return
+	}
+	var health event.ScoreHealth
+	if err := candidate.Decode(&health); err != nil {
+		p.err = err
+		return
+	}
+	_, p.err = fmt.Fprintf(p.writer, "\n[t%d] health %.0f |", health.TurnScored, health.Composite)
+	for _, subscore := range []struct {
+		name  string
+		value *float64
+	}{{"sat", health.Saturation}, {"stale", health.Staleness}, {"rel", health.Relevance}, {"coh", health.Coherence}} {
+		if subscore.value != nil && p.err == nil {
+			_, p.err = fmt.Fprintf(p.writer, " %s %.2f", subscore.name, *subscore.value)
+		}
+	}
+	mode := "async"
+	if health.OnCriticalPath {
+		mode = "final"
+	}
+	if p.err == nil {
+		_, p.err = fmt.Fprintf(p.writer, " (%s %dms)\n", mode, health.LatencyMS)
+	}
 }
 
 func (p *jsonlPublisher) Publish(candidate event.Event) {

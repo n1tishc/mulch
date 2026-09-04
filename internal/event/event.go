@@ -31,6 +31,10 @@ const (
 	TypeToolResult        Type = "tool.result"
 	TypeSessionEnd        Type = "session.end"
 	TypeContextVisibility Type = "context.visibility"
+	TypeContextInject     Type = "context.inject"
+	TypeTurnCompleted     Type = "turn.completed"
+	TypeScoreHealth       Type = "score.health"
+	TypeScorePartial      Type = "score.partial"
 )
 
 type Status string
@@ -145,4 +149,26 @@ type ContextVisibility struct {
 	Changes []VisibilityChange `json:"changes"`
 	Reason  string             `json:"reason"`
 	By      string             `json:"by"`
+}
+type ContextInject struct {
+	Reason string `json:"reason"`
+	Text   string `json:"text"`
+	By     string `json:"by"`
+}
+type TurnCompleted struct{}
+type ScoreHealth struct {
+	TurnScored     int                       `json:"turn_scored"`
+	Composite      float64                   `json:"composite"`
+	Saturation     *float64                  `json:"saturation,omitempty"`
+	Staleness      *float64                  `json:"staleness,omitempty"`
+	Relevance      *float64                  `json:"relevance,omitempty"`
+	Coherence      *float64                  `json:"coherence,omitempty"`
+	Details        map[string]map[string]any `json:"details,omitempty"`
+	LatencyMS      int64                     `json:"latency_ms"`
+	OnCriticalPath bool                      `json:"on_critical_path"`
+}
+type ScorePartial struct {
+	Name         string `json:"name"`
+	TimeoutMS    int64  `json:"timeout_ms"`
+	UsedPrevious bool   `json:"used_previous"`
 }
