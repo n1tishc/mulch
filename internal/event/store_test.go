@@ -27,11 +27,11 @@ func TestBranchCopiesOnlyVisibleHistoryAtForkPoint(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	child, err := store.Branch(ctx, "parent", 3)
+	child, err := store.Branch(ctx, "parent", 4)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if child.ParentID != "parent" || child.ForkSeq == nil || *child.ForkSeq != 3 {
+	if child.ParentID != "parent" || child.ForkSeq == nil || *child.ForkSeq != 4 {
 		t.Fatalf("branch metadata = %+v", child)
 	}
 	copied, err := store.List(ctx, child.ID, 1)
@@ -40,18 +40,68 @@ func TestBranchCopiesOnlyVisibleHistoryAtForkPoint(t *testing.T) {
 	}
 	var texts []string
 	for _, candidate := range copied {
+		if candidate.Type == event.TypeSessionStart {
+			var start event.SessionStart
+			if err := candidate.Decode(&start); err != nil {
+				t.Fatal(err)
+			}
+			if start.ParentID != "parent" || start.ForkSeq == nil || *start.ForkSeq != 4 {
+				t.Fatalf("branch start = %+v", start)
+			}
+			continue
+		}
 		var payload event.UserMessage
 		if err := candidate.Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
 		texts = append(texts, payload.Text)
 	}
-	if want := []string{"event-1", "event-3"}; !reflect.DeepEqual(texts, want) {
+	if want := []string{"event-1", "event-3", "event-4"}; !reflect.DeepEqual(texts, want) {
 		t.Fatalf("copied history = %v, want %v", texts, want)
 	}
 	parent, err := store.List(ctx, "parent", 1)
 	if err != nil || len(parent) != 4 {
 		t.Fatalf("parent history changed: len=%d err=%v", len(parent), err)
+	}
+}
+
+func TestBranchUsesVisibilityAtRequestedSequence(t *testing.T) {
+	store := openStore(t)
+	ctx := t.Context()
+	if err := store.CreateSession(ctx, event.Session{ID: "parent", Task: "task", Model: "m", Workdir: "."}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 5 {
+		if _, err := store.Append(ctx, event.Event{SessionID: "parent", Type: event.TypeUserMessage, Visible: true, Payload: []byte(fmt.Sprintf(`{"text":"event-%d"}`, i+1))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The visibility change is effective at the current log sequence (5), so a
+	// historical fork at 3 still sees event 2 while a fork at 5 does not.
+	if err := store.SetVisible(ctx, "parent", []int64{2}, false); err != nil {
+		t.Fatal(err)
+	}
+	earlier, err := store.Branch(ctx, "parent", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later, err := store.Branch(ctx, "parent", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	earlierVisible, err := store.Visible(ctx, earlier.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	laterVisible, err := store.Visible(ctx, later.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(earlierVisible) != 3 {
+		t.Fatalf("earlier visible events = %d, want 3", len(earlierVisible))
+	}
+	if len(laterVisible) != 4 {
+		t.Fatalf("later visible events = %d, want 4", len(laterVisible))
 	}
 }
 

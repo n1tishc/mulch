@@ -1,9 +1,20 @@
 package event
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"time"
 )
+
+func NewSessionID() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("create session id: %w", err)
+	}
+	return hex.EncodeToString(value[:]), nil
+}
 
 type Type string
 
@@ -60,9 +71,11 @@ type Event struct {
 func (e Event) Decode(dst any) error { return json.Unmarshal(e.Payload, dst) }
 
 type SessionStart struct {
-	Task    string `json:"task"`
-	Model   string `json:"model"`
-	Workdir string `json:"workdir"`
+	Task     string `json:"task"`
+	Model    string `json:"model"`
+	Workdir  string `json:"workdir"`
+	ParentID string `json:"parent_id,omitempty"`
+	ForkSeq  *int64 `json:"fork_seq,omitempty"`
 }
 type SystemPrompt struct {
 	Text    string         `json:"text"`

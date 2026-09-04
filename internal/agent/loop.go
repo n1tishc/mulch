@@ -2,8 +2,6 @@ package agent
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,7 +35,7 @@ type Dependencies struct {
 }
 
 func Run(ctx context.Context, deps Dependencies, task string, emit func(string)) (string, error) {
-	id, err := newID()
+	id, err := event.NewSessionID()
 	if err != nil {
 		return "", err
 	}
@@ -290,12 +288,4 @@ func stream(ctx context.Context, llm provider.LLM, request provider.Request, con
 	}
 	completed := <-done
 	return timedResponse{Response: completed.response, latency: time.Since(started)}, errors.Join(completed.err, consumeErr)
-}
-
-func newID() (string, error) {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("create session id: %w", err)
-	}
-	return hex.EncodeToString(b[:]), nil
 }

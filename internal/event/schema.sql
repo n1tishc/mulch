@@ -30,3 +30,14 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id, seq);
 CREATE INDEX IF NOT EXISTS idx_events_session_type ON events(session_id, type);
+
+CREATE TABLE IF NOT EXISTS event_visibility (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  event_seq INTEGER NOT NULL,
+  effective_seq INTEGER NOT NULL,
+  visible INTEGER NOT NULL,
+  FOREIGN KEY(session_id, event_seq) REFERENCES events(session_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_event_visibility_asof
+  ON event_visibility(session_id, event_seq, effective_seq, id);

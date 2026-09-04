@@ -90,6 +90,9 @@ func branch(ctx context.Context, args []string, opts Options) error {
 	if flags.NArg() < 1 || flags.NArg() > 2 || *at < 0 {
 		return errors.New("mulch branch requires a session ID, --at sequence, and optional prompt")
 	}
+	if opts.Getenv("MULCH_PROVIDER_API_KEY") == "" {
+		return errors.New("MULCH_PROVIDER_API_KEY is required (set it in the environment or .env)")
+	}
 	store, err := event.Open(context.WithoutCancel(ctx), *dbPath, nil)
 	if err != nil {
 		return err
