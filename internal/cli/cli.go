@@ -13,6 +13,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/n1tishc/mulch/internal/agent"
 	"github.com/n1tishc/mulch/internal/bus"
+	meval "github.com/n1tishc/mulch/internal/eval"
 	"github.com/n1tishc/mulch/internal/event"
 	"github.com/n1tishc/mulch/internal/hook"
 	"github.com/n1tishc/mulch/internal/intervene"
@@ -51,11 +52,13 @@ func Execute(ctx context.Context, args []string, opts Options) error {
 	}
 	_ = godotenv.Load()
 	if len(args) == 0 {
-		return errors.New("usage: mulch <run|replay|resume|branch|tree|label|sessions> [flags]")
+		return errors.New("usage: mulch <run|eval|replay|resume|branch|tree|label|sessions> [flags]")
 	}
 	switch args[0] {
 	case "run":
 		return run(ctx, args[1:], opts)
+	case "eval":
+		return evalCommand(ctx, args[1:], opts)
 	case "replay":
 		return replay(ctx, args[1:], opts)
 	case "resume":
@@ -69,8 +72,40 @@ func Execute(ctx context.Context, args []string, opts Options) error {
 	case "sessions":
 		return sessions(ctx, args[1:], opts)
 	default:
-		return errors.New("usage: mulch <run|replay|resume|branch|tree|label|sessions> [flags]")
+		return errors.New("usage: mulch <run|eval|replay|resume|branch|tree|label|sessions> [flags]")
 	}
+}
+
+func evalCommand(ctx context.Context, args []string, opts Options) error {
+	flags := flag.NewFlagSet("eval", flag.ContinueOnError)
+	flags.SetOutput(opts.Stderr)
+	runs := flags.Int("runs", 10, "runs per intervention mode")
+	concurrency := flags.Int("concurrency", 5, "maximum concurrent sessions")
+	output := flags.String("output", ".", "report directory")
+	model := flags.String("model", envOr(opts.Getenv, "MULCH_MODEL", defaultModel), "model")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 1 {
+		return errors.New("mulch eval requires exactly one scenario file")
+	}
+	if *runs < 1 || *concurrency < 1 {
+		return errors.New("--runs and --concurrency must be positive")
+	}
+	key := opts.Getenv("MULCH_PROVIDER_API_KEY")
+	if key == "" {
+		return errors.New("MULCH_PROVIDER_API_KEY is required (set it in the environment or .env)")
+	}
+	scenario, err := meval.LoadScenario(flags.Arg(0))
+	if err != nil {
+		return err
+	}
+	result, err := meval.Run(ctx, scenario, meval.Options{Runs: *runs, Concurrency: *concurrency, OutputDir: *output, Model: *model, LLM: func() provider.LLM { return opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")) }})
+	if err != nil {
+		return err
+	}
+	_, err = io.WriteString(opts.Stdout, result.Markdown())
+	return err
 }
 
 func resume(ctx context.Context, args []string, opts Options) error {

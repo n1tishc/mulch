@@ -38,6 +38,7 @@ const (
 	TypeScorePartial      Type = "score.partial"
 	TypeInterveneFire     Type = "intervene.fire"
 	TypeInterveneSkip     Type = "intervene.skip"
+	TypeEvalInject        Type = "eval.inject"
 )
 
 type Status string
@@ -194,4 +195,9 @@ type InterveneSkip struct {
 	Reason     string `json:"reason"`
 	TurnScored int    `json:"turn_scored,omitempty"`
 	BeforeTurn int    `json:"before_turn"`
+}
+type EvalInject struct {
+	Kind      string `json:"kind"`
+	Text      string `json:"text"`
+	TargetSeq int64  `json:"target_seq,omitempty"`
 }
