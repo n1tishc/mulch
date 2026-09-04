@@ -120,6 +120,37 @@ func TestReplayIsOfflineAndDeterministic(t *testing.T) {
 	if first.String() != "streamed answer" || first.String() != second.String() {
 		t.Fatalf("replays = %q and %q", first.String(), second.String())
 	}
+
+	var firstJSON, secondJSON bytes.Buffer
+	for _, out := range []*bytes.Buffer{&firstJSON, &secondJSON} {
+		err = cli.Execute(t.Context(), []string{"replay", "--json", "--db", db, id}, cli.Options{
+			Stdout: out, Stderr: &bytes.Buffer{}, Getenv: func(string) string { return "" },
+			LLMFactory: func(string, string) provider.LLM { t.Fatal("JSON replay contacted model"); return nil },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if firstJSON.String() != secondJSON.String() {
+		t.Fatal("repeated JSON replays differ")
+	}
+	var deltas []string
+	for _, line := range strings.Split(strings.TrimSpace(firstJSON.String()), "\n") {
+		var recorded event.Event
+		if err := json.Unmarshal([]byte(line), &recorded); err != nil {
+			t.Fatal(err)
+		}
+		if recorded.Type == event.TypeAssistantDelta {
+			var delta event.AssistantDelta
+			if err := recorded.Decode(&delta); err != nil {
+				t.Fatal(err)
+			}
+			deltas = append(deltas, delta.Text)
+		}
+	}
+	if len(deltas) != 2 || deltas[0] != "streamed " || deltas[1] != "answer" {
+		t.Fatalf("replayed deltas = %#v", deltas)
+	}
 }
 
 func contains(types []event.Type, want event.Type) bool {

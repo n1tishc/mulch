@@ -74,9 +74,9 @@ func run(ctx context.Context, args []string, opts Options) error {
 		return fmt.Errorf("create database directory: %w", err)
 	}
 	var publisher event.Publisher
-	var jsonOutput *event.JSONLPublisher
+	var jsonOutput *jsonlPublisher
 	if *jsonMode {
-		jsonOutput = &event.JSONLPublisher{Writer: opts.Stdout}
+		jsonOutput = &jsonlPublisher{writer: opts.Stdout}
 		publisher = jsonOutput
 	} else {
 		publisher = bus.New()
@@ -127,9 +127,9 @@ func replay(ctx context.Context, args []string, opts Options) error {
 		return err
 	}
 	if *jsonMode {
-		return event.WriteJSONL(opts.Stdout, events)
+		return writeJSONL(opts.Stdout, events)
 	}
-	return event.ReplayTerminal(opts.Stdout, events)
+	return replayTerminal(opts.Stdout, events)
 }
 
 func envOr(getenv func(string) string, key, fallback string) string {

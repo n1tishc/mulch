@@ -1,4 +1,4 @@
-package event_test
+package cli
 
 import (
 	"bytes"
@@ -16,11 +16,22 @@ func TestReplayTerminalPresentsParallelToolsInModelCallOrder(t *testing.T) {
 		{Seq: 4, Turn: 1, Type: event.TypeToolResult, Payload: outputPayload(t, event.ToolResult{CallID: "slow", Name: "read", Output: "first"})},
 	}
 	var got bytes.Buffer
-	if err := event.ReplayTerminal(&got, events); err != nil {
+	if err := replayTerminal(&got, events); err != nil {
 		t.Fatal(err)
 	}
 	if want := "\n[read] first\n\n[bash] second\n"; got.String() != want {
 		t.Fatalf("output = %q, want %q", got.String(), want)
+	}
+}
+
+func TestReplayTerminalFallsBackToRecordedAssistantMessage(t *testing.T) {
+	events := []event.Event{{Seq: 1, Turn: 1, Type: event.TypeAssistantMessage, Payload: outputPayload(t, event.AssistantMessage{Text: "recorded answer"})}}
+	var got bytes.Buffer
+	if err := replayTerminal(&got, events); err != nil {
+		t.Fatal(err)
+	}
+	if got.String() != "recorded answer" {
+		t.Fatalf("output = %q", got.String())
 	}
 }
 
