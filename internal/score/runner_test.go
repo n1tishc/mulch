@@ -55,6 +55,36 @@ func TestRunnerPersistsPartialAndHealthForCompletedTurn(t *testing.T) {
 	}
 }
 
+func TestRunnerUsesConfiguredCompositeWeights(t *testing.T) {
+	store, err := event.Open(t.Context(), t.TempDir()+"/events.db", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateSession(t.Context(), event.Session{ID: "s", Task: "task", Model: "fake", Workdir: "."}); err != nil {
+		t.Fatal(err)
+	}
+	runner := score.NewRunnerWithWeights(store, event.Session{ID: "s"}, []score.Scorer{
+		fakeScorer{name: "saturation", value: 0, deadline: time.Second},
+		fakeScorer{name: "coherence", value: 1, deadline: time.Second},
+	}, score.Weights{Saturation: .25, Coherence: .75})
+	runner.OnEvent(t.Context(), event.Event{SessionID: "s", Turn: 1, Type: event.TypeTurnCompleted, Payload: payload(t, event.TurnCompleted{}), CreatedAt: time.Now()})
+	if err := runner.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.List(t.Context(), "s", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var health event.ScoreHealth
+	if err := findType(t, events, event.TypeScoreHealth).Decode(&health); err != nil {
+		t.Fatal(err)
+	}
+	if health.Composite != 75 {
+		t.Fatalf("composite = %v", health.Composite)
+	}
+}
+
 func TestRunnerCancelsAndPersistsFinalScoreAtWaitDeadline(t *testing.T) {
 	store, err := event.Open(t.Context(), t.TempDir()+"/events.db", nil)
 	if err != nil {

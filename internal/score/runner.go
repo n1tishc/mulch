@@ -35,9 +35,20 @@ type Runner struct {
 	events    []event.Event
 	responses map[int]event.LLMResponse
 	err       error
+	weights   map[string]float64
+}
+
+type Weights struct{ Saturation, Staleness, Relevance, Coherence float64 }
+
+func DefaultWeights() Weights {
+	return Weights{Saturation: .3, Staleness: .2, Relevance: .3, Coherence: .2}
 }
 
 func NewRunner(store Store, session event.Session, scorers []Scorer, history ...event.Event) *Runner {
+	return NewRunnerWithWeights(store, session, scorers, DefaultWeights(), history...)
+}
+
+func NewRunnerWithWeights(store Store, session event.Session, scorers []Scorer, weights Weights, history ...event.Event) *Runner {
 	ctx, cancel := context.WithCancel(context.Background())
 	previous := map[string]float64{}
 	for _, candidate := range history {
@@ -54,7 +65,7 @@ func NewRunner(store Store, session event.Session, scorers []Scorer, history ...
 			}
 		}
 	}
-	r := &Runner{store: store, session: session, composite: NewComposite(scorers, previous), jobs: make(chan scoreJob, 1), ctx: ctx, cancel: cancel, responses: map[int]event.LLMResponse{}}
+	r := &Runner{store: store, session: session, composite: NewComposite(scorers, previous), jobs: make(chan scoreJob, 1), ctx: ctx, cancel: cancel, responses: map[int]event.LLMResponse{}, weights: map[string]float64{"saturation": weights.Saturation, "staleness": weights.Staleness, "relevance": weights.Relevance, "coherence": weights.Coherence}}
 	for _, candidate := range history {
 		r.events = append(r.events, candidate)
 		if candidate.Type == event.TypeLLMResponse {
@@ -153,7 +164,6 @@ func (r *Runner) score(job scoreJob) {
 		r.append(job, event.TypeScorePartial, event.ScorePartial{Name: partial.Name, TimeoutMS: partial.TimeoutMS, UsedPrevious: partial.UsedPrevious})
 	}
 	health := event.ScoreHealth{TurnScored: job.turn, Details: result.Details, LatencyMS: result.Latency.Milliseconds(), OnCriticalPath: r.waiting.Load()}
-	weights := map[string]float64{"saturation": .3, "staleness": .2, "relevance": .3, "coherence": .2}
 	var weighted, totalWeight float64
 	for name, value := range result.Scores {
 		copy := value
@@ -167,7 +177,7 @@ func (r *Runner) score(job scoreJob) {
 		case "coherence":
 			health.Coherence = &copy
 		}
-		if weight := weights[name]; weight > 0 {
+		if weight := r.weights[name]; weight > 0 {
 			weighted += weight * value
 			totalWeight += weight
 		}

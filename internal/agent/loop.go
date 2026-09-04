@@ -235,6 +235,31 @@ func continueSession(ctx context.Context, deps Dependencies, id string, started 
 		if deps.Tools == nil {
 			return fail(errors.New("model requested tools but no executor is configured"), turn, totalInput, totalOutput)
 		}
+		toolBlocks := make([]provider.Block, 0, len(calls))
+		for _, block := range response.Blocks {
+			if block.Type == "tool_use" {
+				toolBlocks = append(toolBlocks, block)
+			}
+		}
+		hookTurn := &hook.Turn{SessionID: id, Turn: turn, Visible: visible, ToolCalls: toolBlocks}
+		for _, extension := range deps.Hooks {
+			if before, ok := extension.(hook.BeforeTools); ok {
+				if err = before.BeforeTools(ctx, hookTurn); err != nil {
+					return fail(fmt.Errorf("before tools hook %q: %w", extension.Name(), err), turn, totalInput, totalOutput)
+				}
+			}
+		}
+		if len(hookTurn.ToolCalls) == 0 {
+			for _, call := range calls {
+				if err = appendPayload(event.TypeToolResult, turn, true, event.ToolResult{CallID: call.ID, Name: call.Name, Output: "tool call withheld by a before-tools hook; reconsider using the updated context", IsError: true, Cancelled: true}); err != nil {
+					return fail(err, turn, totalInput, totalOutput)
+				}
+			}
+			if err = appendPayload(event.TypeTurnCompleted, turn, false, event.TurnCompleted{}); err != nil {
+				return fail(err, turn, totalInput, totalOutput)
+			}
+			continue
+		}
 		var toolEventErr error
 		deps.Tools.RunAll(ctx, calls, func(execution tool.ExecutionEvent) {
 			if toolEventErr != nil {

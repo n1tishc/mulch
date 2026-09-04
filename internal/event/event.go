@@ -36,6 +36,8 @@ const (
 	TypeTurnCompleted     Type = "turn.completed"
 	TypeScoreHealth       Type = "score.health"
 	TypeScorePartial      Type = "score.partial"
+	TypeInterveneFire     Type = "intervene.fire"
+	TypeInterveneSkip     Type = "intervene.skip"
 )
 
 type Status string
@@ -179,4 +181,16 @@ type ScorePartial struct {
 	Name         string `json:"name"`
 	TimeoutMS    int64  `json:"timeout_ms"`
 	UsedPrevious bool   `json:"used_previous"`
+}
+type InterveneFire struct {
+	Action            string  `json:"action"`
+	Reason            string  `json:"reason"`
+	TurnScored        int     `json:"turn_scored"`
+	AppliedBeforeTurn int     `json:"applied_before_turn"`
+	AffectedSeqs      []int64 `json:"affected_seqs,omitempty"`
+}
+type InterveneSkip struct {
+	Reason     string `json:"reason"`
+	TurnScored int    `json:"turn_scored,omitempty"`
+	BeforeTurn int    `json:"before_turn"`
 }

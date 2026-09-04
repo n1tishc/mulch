@@ -8,11 +8,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/joho/godotenv"
 	"github.com/n1tishc/mulch/internal/agent"
 	"github.com/n1tishc/mulch/internal/event"
 	"github.com/n1tishc/mulch/internal/hook"
+	"github.com/n1tishc/mulch/internal/intervene"
 	"github.com/n1tishc/mulch/internal/provider"
 	"github.com/n1tishc/mulch/internal/score"
 	"github.com/n1tishc/mulch/internal/tool"
@@ -140,13 +142,20 @@ func continueCLI(ctx context.Context, dbPath, id, prompt string, jsonMode bool, 
 	if err != nil {
 		return err
 	}
-	scoring := score.NewRunner(store, session, healthScorers(opts, store), history...)
+	judge := opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL"))
+	coherence := score.NewCoherenceWithModel(judge, envOr(opts.Getenv, "MULCH_JUDGE_MODEL", session.Model))
+	scoring := score.NewRunnerWithWeights(store, session, healthScorers(opts, store, coherence), healthWeights(opts), history...)
+	ladder := intervene.New(store, intervene.DefaultPolicy(), coherence)
+	for _, recorded := range history {
+		ladder.OnEvent(ctx, recorded)
+	}
 	publisher.Add(scoring)
+	publisher.Add(ladder)
 	emit := func(text string) { _, _ = io.WriteString(opts.Stdout, text) }
 	if jsonMode {
 		emit = func(string) {}
 	}
-	_, runErr := agent.Resume(ctx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: session.Model, Workdir: session.Workdir, ContextWindow: session.ContextWindow, Hooks: []hook.Hook{scoring}}, id, prompt, emit)
+	_, runErr := agent.Resume(ctx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: session.Model, Workdir: session.Workdir, ContextWindow: session.ContextWindow, Hooks: []hook.Hook{scoring, ladder}}, id, prompt, emit)
 	if !jsonMode {
 		_, _ = fmt.Fprintf(opts.Stderr, "\nsession %s\n", id)
 	}
@@ -284,13 +293,17 @@ func run(ctx context.Context, args []string, opts Options) error {
 	}
 	defer store.Close()
 	executor := tool.NewExecutor([]tool.Tool{tool.NewRead(*workdir), tool.NewWrite(*workdir), tool.NewEdit(*workdir), tool.NewBash(*workdir)})
-	scoring := score.NewRunner(store, event.Session{Task: flags.Arg(0), Model: *model, Workdir: *workdir, ContextWindow: *contextWindow}, healthScorers(opts, store))
+	judge := opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL"))
+	coherence := score.NewCoherenceWithModel(judge, envOr(opts.Getenv, "MULCH_JUDGE_MODEL", *model))
+	scoring := score.NewRunnerWithWeights(store, event.Session{Task: flags.Arg(0), Model: *model, Workdir: *workdir, ContextWindow: *contextWindow}, healthScorers(opts, store, coherence), healthWeights(opts))
+	ladder := intervene.New(store, intervene.DefaultPolicy(), coherence)
 	publisher.Add(scoring)
+	publisher.Add(ladder)
 	emit := func(text string) { _, _ = io.WriteString(opts.Stdout, text) }
 	if *jsonMode {
 		emit = func(string) {}
 	}
-	id, runErr := agent.Run(ctx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: *model, Workdir: *workdir, ContextWindow: *contextWindow, Hooks: []hook.Hook{scoring}}, flags.Arg(0), emit)
+	id, runErr := agent.Run(ctx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: *model, Workdir: *workdir, ContextWindow: *contextWindow, Hooks: []hook.Hook{scoring, ladder}}, flags.Arg(0), emit)
 	if id != "" {
 		if !*jsonMode {
 			_, _ = fmt.Fprintf(opts.Stderr, "\nsession %s\n", id)
@@ -305,13 +318,29 @@ func run(ctx context.Context, args []string, opts Options) error {
 	return runErr
 }
 
-func healthScorers(opts Options, cache provider.EmbeddingCache) []score.Scorer {
-	scorers := []score.Scorer{score.Saturation{}, score.Staleness{}}
+func healthScorers(opts Options, cache provider.EmbeddingCache, coherence *score.Coherence) []score.Scorer {
+	scorers := []score.Scorer{score.Saturation{}, score.Staleness{}, coherence}
 	if key := opts.Getenv("MULCH_EMBEDDING_API_KEY"); key != "" {
 		embedder := opts.EmbedderFactory(key, opts.Getenv("MULCH_EMBEDDING_BASE_URL"), envOr(opts.Getenv, "MULCH_EMBEDDING_MODEL", "voyage-4-lite"))
 		scorers = append(scorers, score.NewRelevance(embedder, cache))
 	}
 	return scorers
+}
+
+func healthWeights(opts Options) score.Weights {
+	d := score.DefaultWeights()
+	d.Saturation = envFloat(opts.Getenv, "MULCH_HEALTH_WEIGHT_SATURATION", d.Saturation)
+	d.Staleness = envFloat(opts.Getenv, "MULCH_HEALTH_WEIGHT_STALENESS", d.Staleness)
+	d.Relevance = envFloat(opts.Getenv, "MULCH_HEALTH_WEIGHT_RELEVANCE", d.Relevance)
+	d.Coherence = envFloat(opts.Getenv, "MULCH_HEALTH_WEIGHT_COHERENCE", d.Coherence)
+	return d
+}
+func envFloat(getenv func(string) string, key string, fallback float64) float64 {
+	value, err := strconv.ParseFloat(getenv(key), 64)
+	if err != nil || value < 0 {
+		return fallback
+	}
+	return value
 }
 
 func replay(ctx context.Context, args []string, opts Options) error {

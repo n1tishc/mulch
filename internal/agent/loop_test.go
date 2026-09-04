@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -14,12 +15,70 @@ import (
 
 	"github.com/n1tishc/mulch/internal/agent"
 	"github.com/n1tishc/mulch/internal/event"
+	"github.com/n1tishc/mulch/internal/hook"
 	"github.com/n1tishc/mulch/internal/provider"
 	"github.com/n1tishc/mulch/internal/tool"
 )
 
 func TestRunCancelsStreamingProviderAndRecordsSession(t *testing.T) {
 	synctest.Test(t, testRunCancelsStreamingProviderAndRecordsSession)
+}
+
+func TestRunCallsBeforeToolsHookBeforeToolBatch(t *testing.T) {
+	store := openStore(t)
+	order := []string{}
+	extension := &orderingHook{call: func() { order = append(order, "hook") }}
+	executor := tool.NewExecutor([]tool.Tool{orderingTool{call: func() { order = append(order, "tool") }}})
+	llm := &scriptedLLM{responses: []provider.Response{{Blocks: []provider.Block{{Type: "tool_use", CallID: "1", Name: "ordered", Input: `{}`}}}, {Blocks: []provider.Block{{Type: "text", Text: "done"}}}}}
+	if _, err := agent.Run(t.Context(), agent.Dependencies{Store: store, LLM: llm, Tools: executor, Model: "fake", Workdir: ".", Hooks: []hook.Hook{extension}}, "test", func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(order, ",") != "hook,tool" {
+		t.Fatalf("order = %v", order)
+	}
+}
+
+func TestRunRecordsCancelledResultsWhenHookWithholdsToolBatch(t *testing.T) {
+	store := openStore(t)
+	toolRan := false
+	executor := tool.NewExecutor([]tool.Tool{orderingTool{call: func() { toolRan = true }}})
+	llm := &scriptedLLM{responses: []provider.Response{{Blocks: []provider.Block{{Type: "tool_use", CallID: "1", Name: "ordered", Input: `{}`}}}, {Blocks: []provider.Block{{Type: "text", Text: "reconsidered"}}}}}
+	if _, err := agent.Run(t.Context(), agent.Dependencies{Store: store, LLM: llm, Tools: executor, Model: "fake", Workdir: ".", Hooks: []hook.Hook{withholdingHook{}}}, "test", func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if toolRan {
+		t.Fatal("withheld tool was executed")
+	}
+	if len(llm.requests) != 2 {
+		t.Fatalf("requests = %d", len(llm.requests))
+	}
+	last := llm.requests[1].Messages[len(llm.requests[1].Messages)-1]
+	if last.Role != provider.RoleTool || len(last.Blocks) != 1 || !last.Blocks[0].IsError {
+		t.Fatalf("reconsideration context = %#v", llm.requests[1].Messages)
+	}
+}
+
+type orderingHook struct{ call func() }
+
+func (*orderingHook) Name() string                                    { return "ordering" }
+func (h *orderingHook) BeforeTools(context.Context, *hook.Turn) error { h.call(); return nil }
+
+type withholdingHook struct{}
+
+func (withholdingHook) Name() string { return "withhold" }
+func (withholdingHook) BeforeTools(_ context.Context, turn *hook.Turn) error {
+	turn.ToolCalls = nil
+	return nil
+}
+
+type orderingTool struct{ call func() }
+
+func (orderingTool) Name() string                { return "ordered" }
+func (orderingTool) Description() string         { return "records order" }
+func (orderingTool) InputSchema() map[string]any { return map[string]any{"type": "object"} }
+func (t orderingTool) Run(context.Context, json.RawMessage) (tool.Result, error) {
+	t.call()
+	return tool.Result{Output: "ok"}, nil
 }
 
 func testRunCancelsStreamingProviderAndRecordsSession(t *testing.T) {
