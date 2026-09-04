@@ -39,6 +39,11 @@ type Session struct {
 	EndedAt                                   *time.Time
 }
 
+type Node struct {
+	Session  Session
+	Children []Node
+}
+
 type Event struct {
 	ID        int64           `json:"id"`
 	SessionID string          `json:"session_id"`

@@ -41,16 +41,188 @@ func Execute(ctx context.Context, args []string, opts Options) error {
 	}
 	_ = godotenv.Load()
 	if len(args) == 0 {
-		return errors.New("usage: mulch <run|replay> [flags]")
+		return errors.New("usage: mulch <run|replay|resume|branch|tree|label|sessions> [flags]")
 	}
 	switch args[0] {
 	case "run":
 		return run(ctx, args[1:], opts)
 	case "replay":
 		return replay(ctx, args[1:], opts)
+	case "resume":
+		return resume(ctx, args[1:], opts)
+	case "branch":
+		return branch(ctx, args[1:], opts)
+	case "tree":
+		return tree(ctx, args[1:], opts)
+	case "label":
+		return label(ctx, args[1:], opts)
+	case "sessions":
+		return sessions(ctx, args[1:], opts)
 	default:
-		return errors.New("usage: mulch <run|replay> [flags]")
+		return errors.New("usage: mulch <run|replay|resume|branch|tree|label|sessions> [flags]")
 	}
+}
+
+func resume(ctx context.Context, args []string, opts Options) error {
+	flags := flag.NewFlagSet("resume", flag.ContinueOnError)
+	flags.SetOutput(opts.Stderr)
+	dbPath := flags.String("db", envOr(opts.Getenv, "MULCH_DB", defaultDB()), "event database")
+	jsonMode := flags.Bool("json", false, "write committed events as JSONL")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() < 1 || flags.NArg() > 2 {
+		return errors.New("mulch resume requires a session ID and optional prompt")
+	}
+	return continueCLI(ctx, *dbPath, flags.Arg(0), optionalArg(flags.Args(), 1), *jsonMode, opts)
+}
+
+func branch(ctx context.Context, args []string, opts Options) error {
+	args = intersperseBranchFlags(args)
+	flags := flag.NewFlagSet("branch", flag.ContinueOnError)
+	flags.SetOutput(opts.Stderr)
+	dbPath := flags.String("db", envOr(opts.Getenv, "MULCH_DB", defaultDB()), "event database")
+	at := flags.Int64("at", -1, "parent sequence to branch from")
+	jsonMode := flags.Bool("json", false, "write committed events as JSONL")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() < 1 || flags.NArg() > 2 || *at < 0 {
+		return errors.New("mulch branch requires a session ID, --at sequence, and optional prompt")
+	}
+	store, err := event.Open(context.WithoutCancel(ctx), *dbPath, nil)
+	if err != nil {
+		return err
+	}
+	child, err := store.Branch(ctx, flags.Arg(0), *at)
+	closeErr := store.Close()
+	if err != nil || closeErr != nil {
+		return errors.Join(err, closeErr)
+	}
+	return continueCLI(ctx, *dbPath, child.ID, optionalArg(flags.Args(), 1), *jsonMode, opts)
+}
+
+func continueCLI(ctx context.Context, dbPath, id, prompt string, jsonMode bool, opts Options) error {
+	key := opts.Getenv("MULCH_PROVIDER_API_KEY")
+	if key == "" {
+		return errors.New("MULCH_PROVIDER_API_KEY is required (set it in the environment or .env)")
+	}
+	var publisher event.Publisher
+	var jsonOutput *jsonlPublisher
+	if jsonMode {
+		jsonOutput = &jsonlPublisher{writer: opts.Stdout}
+		publisher = jsonOutput
+	}
+	store, err := event.Open(context.WithoutCancel(ctx), dbPath, publisher)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	session, err := store.Session(ctx, id)
+	if err != nil {
+		return fmt.Errorf("load session: %w", err)
+	}
+	executor := tool.NewExecutor([]tool.Tool{tool.NewRead(session.Workdir), tool.NewWrite(session.Workdir), tool.NewEdit(session.Workdir), tool.NewBash(session.Workdir)})
+	emit := func(text string) { _, _ = io.WriteString(opts.Stdout, text) }
+	if jsonMode {
+		emit = func(string) {}
+	}
+	_, runErr := agent.Resume(ctx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: session.Model, Workdir: session.Workdir}, id, prompt, emit)
+	if !jsonMode {
+		_, _ = fmt.Fprintf(opts.Stderr, "\nsession %s\n", id)
+	}
+	if jsonOutput != nil {
+		return errors.Join(runErr, jsonOutput.Err())
+	}
+	return runErr
+}
+
+func sessions(ctx context.Context, args []string, opts Options) error {
+	flags := flag.NewFlagSet("sessions", flag.ContinueOnError)
+	flags.SetOutput(opts.Stderr)
+	dbPath := flags.String("db", envOr(opts.Getenv, "MULCH_DB", defaultDB()), "event database")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("mulch sessions takes no arguments")
+	}
+	store, err := event.Open(context.WithoutCancel(ctx), *dbPath, nil)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	all, err := store.Sessions(ctx)
+	if err != nil {
+		return err
+	}
+	return writeSessions(opts.Stdout, all)
+}
+
+func tree(ctx context.Context, args []string, opts Options) error {
+	flags := flag.NewFlagSet("tree", flag.ContinueOnError)
+	flags.SetOutput(opts.Stderr)
+	dbPath := flags.String("db", envOr(opts.Getenv, "MULCH_DB", defaultDB()), "event database")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 1 {
+		return errors.New("mulch tree requires exactly one session ID")
+	}
+	store, err := event.Open(context.WithoutCancel(ctx), *dbPath, nil)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	node, err := store.Tree(ctx, flags.Arg(0))
+	if err != nil {
+		return fmt.Errorf("load session tree: %w", err)
+	}
+	return writeTree(opts.Stdout, node)
+}
+
+func label(ctx context.Context, args []string, opts Options) error {
+	flags := flag.NewFlagSet("label", flag.ContinueOnError)
+	flags.SetOutput(opts.Stderr)
+	dbPath := flags.String("db", envOr(opts.Getenv, "MULCH_DB", defaultDB()), "event database")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 2 {
+		return errors.New("mulch label requires a session ID and label")
+	}
+	store, err := event.Open(context.WithoutCancel(ctx), *dbPath, nil)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	return store.SetLabel(ctx, flags.Arg(0), flags.Arg(1))
+}
+
+func optionalArg(args []string, index int) string {
+	if len(args) > index {
+		return args[index]
+	}
+	return ""
+}
+
+func intersperseBranchFlags(args []string) []string {
+	var flags, positional []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--json" {
+			flags = append(flags, args[i])
+			continue
+		}
+		if args[i] == "--at" || args[i] == "--db" {
+			if i+1 < len(args) {
+				flags = append(flags, args[i], args[i+1])
+				i++
+				continue
+			}
+		}
+		positional = append(positional, args[i])
+	}
+	return append(flags, positional...)
 }
 
 func run(ctx context.Context, args []string, opts Options) error {

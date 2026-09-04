@@ -6,12 +6,89 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/n1tishc/mulch/internal/cli"
 	"github.com/n1tishc/mulch/internal/event"
 	"github.com/n1tishc/mulch/internal/provider"
 )
+
+func TestResumeReconstructsVisibleContextAndAppendsHistory(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "mulch.db")
+	var runErr bytes.Buffer
+	opts := cli.Options{Stdout: &bytes.Buffer{}, Stderr: &runErr, Getenv: testGetenv, LLMFactory: func(string, string) provider.LLM { return commandLLM{} }}
+	if err := cli.Execute(t.Context(), []string{"run", "--db", db, "hello"}, opts); err != nil {
+		t.Fatal(err)
+	}
+	id := strings.Fields(runErr.String())[1]
+	store, err := event.Open(context.Background(), db, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.List(t.Context(), id, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	capture := &captureLLM{}
+	var stdout, stderr bytes.Buffer
+	if err := cli.Execute(t.Context(), []string{"resume", "--db", db, id, "continue"}, cli.Options{Stdout: &stdout, Stderr: &stderr, Getenv: testGetenv, LLMFactory: func(string, string) provider.LLM { return capture }}); err != nil {
+		t.Fatal(err)
+	}
+	request := capture.Request()
+	if len(request.Messages) != 4 || request.Messages[1].Blocks[0].Text != "hello" || request.Messages[2].Blocks[0].Text != "streamed answer" || request.Messages[3].Blocks[0].Text != "continue" {
+		t.Fatalf("resumed messages = %#v", request.Messages)
+	}
+	store, err = event.Open(context.Background(), db, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	after, err := store.List(t.Context(), id, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) <= len(before) {
+		t.Fatalf("history length = %d, want > %d", len(after), len(before))
+	}
+	for i := range before {
+		if before[i].ID != after[i].ID || before[i].Seq != after[i].Seq {
+			t.Fatalf("history rewritten at index %d", i)
+		}
+	}
+}
+
+func TestBranchTreeSessionsAndLabelCommands(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "mulch.db")
+	var runErr bytes.Buffer
+	if err := cli.Execute(t.Context(), []string{"run", "--db", db, "root task"}, cli.Options{Stdout: &bytes.Buffer{}, Stderr: &runErr, Getenv: testGetenv, LLMFactory: func(string, string) provider.LLM { return commandLLM{} }}); err != nil {
+		t.Fatal(err)
+	}
+	root := strings.Fields(runErr.String())[1]
+	var branchErr bytes.Buffer
+	if err := cli.Execute(t.Context(), []string{"branch", root, "--at", "3", "fork task", "--db", db}, cli.Options{Stdout: &bytes.Buffer{}, Stderr: &branchErr, Getenv: testGetenv, LLMFactory: func(string, string) provider.LLM { return commandLLM{} }}); err != nil {
+		t.Fatal(err)
+	}
+	child := strings.Fields(branchErr.String())[1]
+	if err := cli.Execute(t.Context(), []string{"label", "--db", db, child, "experiment"}, cli.Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Getenv: testGetenv}); err != nil {
+		t.Fatal(err)
+	}
+	var sessionsOut, treeOut bytes.Buffer
+	if err := cli.Execute(t.Context(), []string{"sessions", "--db", db}, cli.Options{Stdout: &sessionsOut, Stderr: &bytes.Buffer{}, Getenv: testGetenv}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Execute(t.Context(), []string{"tree", "--db", db, root}, cli.Options{Stdout: &treeOut, Stderr: &bytes.Buffer{}, Getenv: testGetenv}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sessionsOut.String(), child+"\tcompleted\texperiment\t"+root+"\t3") {
+		t.Fatalf("sessions output = %q", sessionsOut.String())
+	}
+	if !strings.Contains(treeOut.String(), "  "+child+" [completed] fork=3 \"experiment\"") {
+		t.Fatalf("tree output = %q", treeOut.String())
+	}
+}
 
 func TestRunStreamsAnswerAndPrintsDurableSessionID(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "mulch.db")
@@ -169,3 +246,24 @@ func (commandLLM) Stream(ctx context.Context, req provider.Request, out chan<- p
 	out <- provider.Delta{Text: "answer"}
 	return provider.Response{Blocks: []provider.Block{{Type: "text", Text: "streamed answer"}}, StopReason: "stop", Model: req.Model}, nil
 }
+
+func testGetenv(key string) string {
+	if key == "MULCH_PROVIDER_API_KEY" {
+		return "test"
+	}
+	return ""
+}
+
+type captureLLM struct {
+	mu      sync.Mutex
+	request provider.Request
+}
+
+func (c *captureLLM) Stream(_ context.Context, req provider.Request, out chan<- provider.Delta) (provider.Response, error) {
+	c.mu.Lock()
+	c.request = req
+	c.mu.Unlock()
+	out <- provider.Delta{Text: "continued"}
+	return provider.Response{Blocks: []provider.Block{{Type: "text", Text: "continued"}}, StopReason: "stop", Model: req.Model}, nil
+}
+func (c *captureLLM) Request() provider.Request { c.mu.Lock(); defer c.mu.Unlock(); return c.request }

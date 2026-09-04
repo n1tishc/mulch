@@ -5,11 +5,87 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 
 	"github.com/n1tishc/mulch/internal/event"
 )
+
+func TestBranchCopiesOnlyVisibleHistoryAtForkPoint(t *testing.T) {
+	store := openStore(t)
+	ctx := t.Context()
+	if err := store.CreateSession(ctx, event.Session{ID: "parent", Task: "original", Model: "model", Workdir: "."}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 4 {
+		if _, err := store.Append(ctx, event.Event{SessionID: "parent", Turn: i, Type: event.TypeUserMessage, Visible: true, Payload: []byte(fmt.Sprintf(`{"text":"event-%d"}`, i+1))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SetVisible(ctx, "parent", []int64{2}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	child, err := store.Branch(ctx, "parent", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.ParentID != "parent" || child.ForkSeq == nil || *child.ForkSeq != 3 {
+		t.Fatalf("branch metadata = %+v", child)
+	}
+	copied, err := store.List(ctx, child.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var texts []string
+	for _, candidate := range copied {
+		var payload event.UserMessage
+		if err := candidate.Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		texts = append(texts, payload.Text)
+	}
+	if want := []string{"event-1", "event-3"}; !reflect.DeepEqual(texts, want) {
+		t.Fatalf("copied history = %v, want %v", texts, want)
+	}
+	parent, err := store.List(ctx, "parent", 1)
+	if err != nil || len(parent) != 4 {
+		t.Fatalf("parent history changed: len=%d err=%v", len(parent), err)
+	}
+}
+
+func TestSessionsLabelsAndTree(t *testing.T) {
+	store := openStore(t)
+	ctx := t.Context()
+	if err := store.CreateSession(ctx, event.Session{ID: "root", Task: "root task", Model: "m", Workdir: "."}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(ctx, event.Event{SessionID: "root", Type: event.TypeUserMessage, Visible: true, Payload: []byte(`{"text":"root"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	child, err := store.Branch(ctx, "root", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetLabel(ctx, child.ID, "experiment"); err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := store.Sessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 || sessions[1].Label != "experiment" {
+		t.Fatalf("sessions = %+v", sessions)
+	}
+	tree, err := store.Tree(ctx, "root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tree.Session.ID != "root" || len(tree.Children) != 1 || tree.Children[0].Session.ID != child.ID || tree.Children[0].Session.Label != "experiment" {
+		t.Fatalf("tree = %+v", tree)
+	}
+}
 
 func TestOpenContextStopsWriter(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())

@@ -97,3 +97,40 @@ func replayTerminal(w io.Writer, events []event.Event) error {
 	}
 	return nil
 }
+
+func writeSessions(w io.Writer, sessions []event.Session) error {
+	for _, session := range sessions {
+		fork := "-"
+		if session.ForkSeq != nil {
+			fork = fmt.Sprint(*session.ForkSeq)
+		}
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", session.ID, session.Status, session.Label, session.ParentID, fork); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeTree(w io.Writer, root event.Node) error {
+	var visit func(event.Node, string) error
+	visit = func(node event.Node, indent string) error {
+		fork := ""
+		if node.Session.ForkSeq != nil {
+			fork = fmt.Sprintf(" fork=%d", *node.Session.ForkSeq)
+		}
+		label := ""
+		if node.Session.Label != "" {
+			label = fmt.Sprintf(" %q", node.Session.Label)
+		}
+		if _, err := fmt.Fprintf(w, "%s%s [%s]%s%s\n", indent, node.Session.ID, node.Session.Status, fork, label); err != nil {
+			return err
+		}
+		for _, child := range node.Children {
+			if err := visit(child, indent+"  "); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return visit(root, "")
+}

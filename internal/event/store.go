@@ -2,8 +2,10 @@ package event
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +26,10 @@ const (
 	writeCreateSession writeKind = iota
 	writeAppendEvent
 	writeEndSession
+	writeBranch
+	writeSetLabel
+	writeResumeSession
+	writeSetVisible
 )
 
 type writeRequest struct {
@@ -33,11 +39,16 @@ type writeRequest struct {
 	event     Event
 	sessionID string
 	status    Status
+	label     string
+	atSeq     int64
+	seqs      []int64
+	visible   bool
 	reply     chan writeResult
 }
 type writeResult struct {
-	event Event
-	err   error
+	event   Event
+	session Session
+	err     error
 }
 
 type SQLiteStore struct {
@@ -145,9 +156,92 @@ func (s *SQLiteStore) executeWrite(conn *sql.Conn, req writeRequest) writeResult
 	case writeEndSession:
 		_, err := conn.ExecContext(req.ctx, `UPDATE sessions SET status=?,ended_at=? WHERE id=?`, req.status, time.Now().UTC().Format(time.RFC3339Nano), req.sessionID)
 		return writeResult{err: err}
+	case writeSetLabel:
+		result, err := conn.ExecContext(req.ctx, `UPDATE sessions SET label=? WHERE id=?`, nullableString(req.label), req.sessionID)
+		if err == nil {
+			var affected int64
+			affected, err = result.RowsAffected()
+			if err == nil && affected == 0 {
+				err = sql.ErrNoRows
+			}
+		}
+		return writeResult{err: err}
+	case writeResumeSession:
+		result, err := conn.ExecContext(req.ctx, `UPDATE sessions SET status=?,ended_at=NULL WHERE id=?`, StatusRunning, req.sessionID)
+		if err == nil {
+			var affected int64
+			affected, err = result.RowsAffected()
+			if err == nil && affected == 0 {
+				err = sql.ErrNoRows
+			}
+		}
+		return writeResult{err: err}
+	case writeBranch:
+		return s.executeBranch(conn, req)
+	case writeSetVisible:
+		tx, err := conn.BeginTx(req.ctx, nil)
+		if err != nil {
+			return writeResult{err: err}
+		}
+		defer tx.Rollback()
+		for _, seq := range req.seqs {
+			result, updateErr := tx.ExecContext(req.ctx, `UPDATE events SET visible=? WHERE session_id=? AND seq=?`, boolInt(req.visible), req.sessionID, seq)
+			if updateErr != nil {
+				return writeResult{err: updateErr}
+			}
+			affected, updateErr := result.RowsAffected()
+			if updateErr != nil {
+				return writeResult{err: updateErr}
+			}
+			if affected == 0 {
+				return writeResult{err: fmt.Errorf("event %s/%d: %w", req.sessionID, seq, sql.ErrNoRows)}
+			}
+		}
+		return writeResult{err: tx.Commit()}
 	default:
 		return writeResult{err: errors.New("unknown event-store write")}
 	}
+}
+
+func (s *SQLiteStore) executeBranch(conn *sql.Conn, req writeRequest) writeResult {
+	var parent Session
+	var parentID, label, created string
+	var forkSeq sql.NullInt64
+	err := conn.QueryRowContext(req.ctx, `SELECT id,COALESCE(parent_id,''),fork_seq,COALESCE(label,''),task,model,context_window,workdir,status,created_at FROM sessions WHERE id=?`, req.sessionID).Scan(&parent.ID, &parentID, &forkSeq, &label, &parent.Task, &parent.Model, &parent.ContextWindow, &parent.Workdir, &parent.Status, &created)
+	if err != nil {
+		return writeResult{err: err}
+	}
+	var maxSeq int64
+	if err = conn.QueryRowContext(req.ctx, `SELECT COALESCE(MAX(seq),0) FROM events WHERE session_id=?`, req.sessionID).Scan(&maxSeq); err != nil {
+		return writeResult{err: err}
+	}
+	if req.atSeq < 0 || req.atSeq > maxSeq {
+		return writeResult{err: fmt.Errorf("fork sequence %d is outside session history (0-%d)", req.atSeq, maxSeq)}
+	}
+	child := req.session
+	child.ParentID = parent.ID
+	child.ForkSeq = &req.atSeq
+	child.Task, child.Model, child.ContextWindow, child.Workdir = parent.Task, parent.Model, parent.ContextWindow, parent.Workdir
+	child.Status = StatusRunning
+	child.CreatedAt = time.Now().UTC()
+	tx, err := conn.BeginTx(req.ctx, nil)
+	if err != nil {
+		return writeResult{err: err}
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(req.ctx, `INSERT INTO sessions(id,parent_id,fork_seq,task,model,context_window,workdir,created_at,status) VALUES(?,?,?,?,?,?,?,?,?)`, child.ID, child.ParentID, req.atSeq, child.Task, child.Model, child.ContextWindow, child.Workdir, child.CreatedAt.Format(time.RFC3339Nano), StatusRunning); err != nil {
+		return writeResult{err: err}
+	}
+	_, err = tx.ExecContext(req.ctx, `INSERT INTO events(session_id,seq,turn,type,payload,tokens,visible,image_ref,created_at)
+		SELECT ?,ROW_NUMBER() OVER (ORDER BY seq),turn,type,payload,tokens,visible,image_ref,created_at FROM events
+		WHERE session_id=? AND seq<=? AND visible=1 ORDER BY seq`, child.ID, parent.ID, req.atSeq)
+	if err != nil {
+		return writeResult{err: err}
+	}
+	if err = tx.Commit(); err != nil {
+		return writeResult{err: err}
+	}
+	return writeResult{session: child}
 }
 
 func (s *SQLiteStore) List(ctx context.Context, sessionID string, from int64) ([]Event, error) {
@@ -204,13 +298,100 @@ func (s *SQLiteStore) EndSession(ctx context.Context, id string, status Status) 
 	return result.err
 }
 
+func (s *SQLiteStore) ResumeSession(ctx context.Context, id string) error {
+	result, err := s.write(ctx, writeRequest{kind: writeResumeSession, sessionID: id})
+	if err != nil {
+		return err
+	}
+	return result.err
+}
+
+func (s *SQLiteStore) SetLabel(ctx context.Context, id, label string) error {
+	result, err := s.write(ctx, writeRequest{kind: writeSetLabel, sessionID: id, label: label})
+	if err != nil {
+		return err
+	}
+	return result.err
+}
+
+func (s *SQLiteStore) Branch(ctx context.Context, parentID string, atSeq int64) (Session, error) {
+	id, err := randomID()
+	if err != nil {
+		return Session{}, err
+	}
+	result, err := s.write(ctx, writeRequest{kind: writeBranch, sessionID: parentID, atSeq: atSeq, session: Session{ID: id}})
+	if err != nil {
+		return Session{}, err
+	}
+	return result.session, result.err
+}
+
+func (s *SQLiteStore) SetVisible(ctx context.Context, sessionID string, seqs []int64, visible bool) error {
+	result, err := s.write(ctx, writeRequest{kind: writeSetVisible, sessionID: sessionID, seqs: append([]int64(nil), seqs...), visible: visible})
+	if err != nil {
+		return err
+	}
+	return result.err
+}
+
+func (s *SQLiteStore) Sessions(ctx context.Context) ([]Session, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,parent_id,fork_seq,label,task,model,context_window,workdir,status,created_at,ended_at FROM sessions ORDER BY created_at,id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sessions []Session
+	for rows.Next() {
+		x, err := scanSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, x)
+	}
+	return sessions, rows.Err()
+}
+
+func (s *SQLiteStore) Tree(ctx context.Context, rootID string) (Node, error) {
+	sessions, err := s.Sessions(ctx)
+	if err != nil {
+		return Node{}, err
+	}
+	byParent := make(map[string][]Session)
+	var root *Session
+	for i := range sessions {
+		if sessions[i].ID == rootID {
+			root = &sessions[i]
+		}
+		byParent[sessions[i].ParentID] = append(byParent[sessions[i].ParentID], sessions[i])
+	}
+	if root == nil {
+		return Node{}, sql.ErrNoRows
+	}
+	var build func(Session) Node
+	build = func(x Session) Node {
+		n := Node{Session: x}
+		for _, child := range byParent[x.ID] {
+			n.Children = append(n.Children, build(child))
+		}
+		return n
+	}
+	return build(*root), nil
+}
+
 func (s *SQLiteStore) Session(ctx context.Context, id string) (Session, error) {
+	x, err := scanSession(s.db.QueryRowContext(ctx, `SELECT id,parent_id,fork_seq,label,task,model,context_window,workdir,status,created_at,ended_at FROM sessions WHERE id=?`, id))
+	return x, err
+}
+
+type scanner interface{ Scan(...any) error }
+
+func scanSession(row scanner) (Session, error) {
 	var x Session
 	var created string
 	var ended sql.NullString
 	var parentID, label sql.NullString
 	var forkSeq sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT id,parent_id,fork_seq,label,task,model,context_window,workdir,status,created_at,ended_at FROM sessions WHERE id=?`, id).Scan(&x.ID, &parentID, &forkSeq, &label, &x.Task, &x.Model, &x.ContextWindow, &x.Workdir, &x.Status, &created, &ended)
+	err := row.Scan(&x.ID, &parentID, &forkSeq, &label, &x.Task, &x.Model, &x.ContextWindow, &x.Workdir, &x.Status, &created, &ended)
 	if err != nil {
 		return x, err
 	}
@@ -228,6 +409,14 @@ func (s *SQLiteStore) Session(ctx context.Context, id string) (Session, error) {
 		x.EndedAt = &t
 	}
 	return x, err
+}
+
+func randomID() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("create session id: %w", err)
+	}
+	return hex.EncodeToString(value[:]), nil
 }
 
 func (s *SQLiteStore) Close() error {
