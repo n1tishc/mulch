@@ -40,15 +40,27 @@ func Execute(ctx context.Context, args []string, opts Options) error {
 		opts.LLMFactory = func(key, base string) provider.LLM { return provider.NewOpenAI(key, base) }
 	}
 	_ = godotenv.Load()
-	if len(args) == 0 || args[0] != "run" {
-		return errors.New("usage: mulch run [flags] <prompt>")
+	if len(args) == 0 {
+		return errors.New("usage: mulch <run|replay> [flags]")
 	}
+	switch args[0] {
+	case "run":
+		return run(ctx, args[1:], opts)
+	case "replay":
+		return replay(ctx, args[1:], opts)
+	default:
+		return errors.New("usage: mulch <run|replay> [flags]")
+	}
+}
+
+func run(ctx context.Context, args []string, opts Options) error {
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	flags.SetOutput(opts.Stderr)
 	workdir := flags.String("workdir", ".", "working directory")
 	model := flags.String("model", envOr(opts.Getenv, "MULCH_MODEL", defaultModel), "model")
 	dbPath := flags.String("db", envOr(opts.Getenv, "MULCH_DB", defaultDB()), "event database")
-	if err := flags.Parse(args[1:]); err != nil {
+	jsonMode := flags.Bool("json", false, "write committed events as JSONL")
+	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
@@ -61,18 +73,63 @@ func Execute(ctx context.Context, args []string, opts Options) error {
 	if err := os.MkdirAll(filepath.Dir(*dbPath), 0700); err != nil {
 		return fmt.Errorf("create database directory: %w", err)
 	}
-	b := bus.New()
-	store, err := event.Open(context.WithoutCancel(ctx), *dbPath, b)
+	var publisher event.Publisher
+	var jsonOutput *event.JSONLPublisher
+	if *jsonMode {
+		jsonOutput = &event.JSONLPublisher{Writer: opts.Stdout}
+		publisher = jsonOutput
+	} else {
+		publisher = bus.New()
+	}
+	store, err := event.Open(context.WithoutCancel(ctx), *dbPath, publisher)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 	executor := tool.NewExecutor([]tool.Tool{tool.NewRead(*workdir), tool.NewWrite(*workdir), tool.NewEdit(*workdir), tool.NewBash(*workdir)})
-	id, runErr := agent.Run(ctx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: *model, Workdir: *workdir}, flags.Arg(0), func(text string) { _, _ = io.WriteString(opts.Stdout, text) })
+	emit := func(text string) { _, _ = io.WriteString(opts.Stdout, text) }
+	if *jsonMode {
+		emit = func(string) {}
+	}
+	id, runErr := agent.Run(ctx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: *model, Workdir: *workdir}, flags.Arg(0), emit)
 	if id != "" {
-		_, _ = fmt.Fprintf(opts.Stderr, "\nsession %s\n", id)
+		if !*jsonMode {
+			_, _ = fmt.Fprintf(opts.Stderr, "\nsession %s\n", id)
+		}
+	}
+	if jsonOutput != nil {
+		return errors.Join(runErr, jsonOutput.Err())
 	}
 	return runErr
+}
+
+func replay(ctx context.Context, args []string, opts Options) error {
+	flags := flag.NewFlagSet("replay", flag.ContinueOnError)
+	flags.SetOutput(opts.Stderr)
+	dbPath := flags.String("db", envOr(opts.Getenv, "MULCH_DB", defaultDB()), "event database")
+	jsonMode := flags.Bool("json", false, "write recorded events as JSONL")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 1 {
+		return errors.New("mulch replay requires exactly one session ID")
+	}
+	store, err := event.Open(context.WithoutCancel(ctx), *dbPath, nil)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if _, err := store.Session(ctx, flags.Arg(0)); err != nil {
+		return fmt.Errorf("load session: %w", err)
+	}
+	events, err := store.List(ctx, flags.Arg(0), 1)
+	if err != nil {
+		return err
+	}
+	if *jsonMode {
+		return event.WriteJSONL(opts.Stdout, events)
+	}
+	return event.ReplayTerminal(opts.Stdout, events)
 }
 
 func envOr(getenv func(string) string, key, fallback string) string {

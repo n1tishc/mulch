@@ -114,7 +114,13 @@ func Run(ctx context.Context, deps Dependencies, task string, emit func(string))
 		if err = appendPayload(event.TypeLLMRequest, turn, false, event.LLMRequest{MessageCount: len(messages), VisibleEventSeqs: seqs}); err != nil {
 			return fail(err, turn-1, totalInput, totalOutput)
 		}
-		response, streamErr := stream(ctx, deps.LLM, request, emit)
+		response, streamErr := stream(ctx, deps.LLM, request, func(delta provider.Delta) error {
+			if err := appendPayload(event.TypeAssistantDelta, turn, false, event.AssistantDelta{Text: delta.Text}); err != nil {
+				return err
+			}
+			emit(delta.Text)
+			return nil
+		})
 		totalInput += response.InputTokens
 		totalOutput += response.OutputTokens
 		status := event.StatusCompleted
@@ -182,7 +188,7 @@ type timedResponse struct {
 	latency time.Duration
 }
 
-func stream(ctx context.Context, llm provider.LLM, request provider.Request, emit func(string)) (timedResponse, error) {
+func stream(ctx context.Context, llm provider.LLM, request provider.Request, consume func(provider.Delta) error) (timedResponse, error) {
 	started := time.Now()
 	deltas := make(chan provider.Delta, 64)
 	type result struct {
@@ -195,11 +201,14 @@ func stream(ctx context.Context, llm provider.LLM, request provider.Request, emi
 		close(deltas)
 		done <- result{response, err}
 	}()
+	var consumeErr error
 	for delta := range deltas {
-		emit(delta.Text)
+		if consumeErr == nil {
+			consumeErr = consume(delta)
+		}
 	}
 	completed := <-done
-	return timedResponse{Response: completed.response, latency: time.Since(started)}, completed.err
+	return timedResponse{Response: completed.response, latency: time.Since(started)}, errors.Join(completed.err, consumeErr)
 }
 
 func newID() (string, error) {

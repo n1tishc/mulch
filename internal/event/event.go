@@ -13,6 +13,7 @@ const (
 	TypeUserMessage       Type = "user.message"
 	TypeLLMRequest        Type = "llm.request"
 	TypeLLMResponse       Type = "llm.response"
+	TypeAssistantDelta    Type = "assistant.delta"
 	TypeAssistantMessage  Type = "assistant.message"
 	TypeAssistantToolCall Type = "assistant.tool_call"
 	TypeToolStart         Type = "tool.start"
@@ -39,16 +40,16 @@ type Session struct {
 }
 
 type Event struct {
-	ID        int64
-	SessionID string
-	Seq       int64
-	Turn      int
-	Type      Type
-	Payload   json.RawMessage
-	Tokens    *int
-	Visible   bool
-	ImageRef  string
-	CreatedAt time.Time
+	ID        int64           `json:"id"`
+	SessionID string          `json:"session_id"`
+	Seq       int64           `json:"seq"`
+	Turn      int             `json:"turn"`
+	Type      Type            `json:"type"`
+	Payload   json.RawMessage `json:"payload"`
+	Tokens    *int            `json:"tokens,omitempty"`
+	Visible   bool            `json:"visible"`
+	ImageRef  string          `json:"image_ref,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
 }
 
 func (e Event) Decode(dst any) error { return json.Unmarshal(e.Payload, dst) }
@@ -80,6 +81,9 @@ type LLMResponse struct {
 	LatencyMS    int64  `json:"latency_ms"`
 	Model        string `json:"model"`
 	Cancelled    bool   `json:"cancelled"`
+}
+type AssistantDelta struct {
+	Text string `json:"text"`
 }
 type AssistantMessage struct {
 	Text       string `json:"text"`
