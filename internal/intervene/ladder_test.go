@@ -59,6 +59,72 @@ func TestLadderRoutesLowCoherenceToReanchor(t *testing.T) {
 	}
 }
 
+func TestLadderCompactsOldSaturatedHistoryWithoutDeletingIt(t *testing.T) {
+	store := &memoryStore{}
+	summarizer := &fakeSummarizer{summary: "Paths: internal/agent/loop.go. Decision: preserve the log. Open questions: none."}
+	ladder := intervene.New(store, intervene.Policy{WarnBelow: 80, CompactBelow: 50, ConfirmTurns: 1}).WithSummarizer(summarizer)
+	saturation := .1
+	ladder.OnEvent(t.Context(), healthScores(t, 7, 45, &saturation, nil, nil, nil))
+	visible := append(visibleHistory(t), text(t, 6, 4, event.TypeAssistantMessage, event.AssistantMessage{Text: "another old decision"}), text(t, 7, 7, event.TypeToolResult, event.ToolResult{Output: "latest"}))
+	turn := &hook.Turn{SessionID: "s", Turn: 8, Visible: visible, ToolCalls: []provider.Block{{Type: "tool_use"}}}
+	if err := ladder.BeforeTools(t.Context(), turn); err != nil {
+		t.Fatal(err)
+	}
+	if len(summarizer.events) == 0 || len(store.hidden) == 0 {
+		t.Fatalf("summarized=%d hidden=%v", len(summarizer.events), store.hidden)
+	}
+	if store.compact.Summary != summarizer.summary || len(store.compact.ReplacedSeqs) != len(store.hidden) {
+		t.Fatalf("compact = %#v", store.compact)
+	}
+	if store.lastFire.Action != "compact" || len(turn.ToolCalls) != 0 {
+		t.Fatalf("fire=%#v tools=%v", store.lastFire, turn.ToolCalls)
+	}
+}
+
+func TestLadderEscalatesCriticalHealthBeforeTools(t *testing.T) {
+	store := &memoryStore{}
+	ladder := intervene.New(store, intervene.Policy{WarnBelow: 80, EscalateBelow: 25, ConfirmTurns: 1})
+	ladder.OnEvent(t.Context(), healthScores(t, 3, 20, nil, nil, nil, nil))
+	reason := ""
+	turn := &hook.Turn{SessionID: "s", Turn: 4, ToolCalls: []provider.Block{{Type: "tool_use"}}, Cancel: func(got string) { reason = got }}
+	if err := ladder.BeforeTools(t.Context(), turn); err != nil {
+		t.Fatal(err)
+	}
+	if reason == "" || store.lastFire.Action != "escalate" || len(turn.ToolCalls) != 0 {
+		t.Fatalf("reason=%q fire=%#v tools=%v", reason, store.lastFire, turn.ToolCalls)
+	}
+}
+
+func TestSyntheticSessionExercisesEveryLadderAction(t *testing.T) {
+	low := .1
+	cases := []struct {
+		name   string
+		score  event.ScoreHealth
+		action string
+	}{
+		{"warn", event.ScoreHealth{TurnScored: 3, Composite: 75, Saturation: &low}, "warn"},
+		{"prune", event.ScoreHealth{TurnScored: 3, Composite: 60, Relevance: &low, Details: map[string]map[string]any{"relevance": {"lowest": []any{map[string]any{"seq": int64(3), "similarity": .1}}}}}, "prune"},
+		{"compact", event.ScoreHealth{TurnScored: 3, Composite: 45, Saturation: &low}, "compact"},
+		{"reanchor", event.ScoreHealth{TurnScored: 3, Composite: 35, Coherence: &low}, "reanchor"},
+		{"escalate", event.ScoreHealth{TurnScored: 3, Composite: 20}, "escalate"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &memoryStore{}
+			ladder := intervene.New(store, intervene.Policy{ConfirmTurns: 1}).WithSummarizer(&fakeSummarizer{summary: "Paths: x.go. Decisions: keep. Open questions: none."})
+			encoded, _ := json.Marshal(tc.score)
+			ladder.OnEvent(t.Context(), event.Event{SessionID: "synthetic", Turn: 3, Type: event.TypeScoreHealth, Payload: encoded})
+			turn := &hook.Turn{SessionID: "synthetic", Turn: 4, Visible: visibleHistory(t), ToolCalls: []provider.Block{{Type: "tool_use"}}, Cancel: func(string) {}}
+			if err := ladder.BeforeTools(t.Context(), turn); err != nil {
+				t.Fatal(err)
+			}
+			if store.lastFire.Action != tc.action {
+				t.Fatalf("action = %q, want %q", store.lastFire.Action, tc.action)
+			}
+		})
+	}
+}
+
 func TestLadderRequestsCoherenceWhileConfirmingAndRestoresCooldown(t *testing.T) {
 	store := &memoryStore{}
 	requester := &requestCounter{}
@@ -92,6 +158,8 @@ type memoryStore struct {
 	inject      string
 	lastType    event.Type
 	lastPayload json.RawMessage
+	compact     event.ContextCompact
+	lastFire    event.InterveneFire
 }
 
 func (s *memoryStore) Append(_ context.Context, e event.Event) (event.Event, error) {
@@ -101,6 +169,12 @@ func (s *memoryStore) Append(_ context.Context, e event.Event) (event.Event, err
 		var p event.ContextInject
 		_ = json.Unmarshal(e.Payload, &p)
 		s.inject = p.Text
+	}
+	if e.Type == event.TypeContextCompact {
+		_ = json.Unmarshal(e.Payload, &s.compact)
+	}
+	if e.Type == event.TypeInterveneFire {
+		_ = json.Unmarshal(e.Payload, &s.lastFire)
 	}
 	return e, nil
 }
@@ -113,6 +187,22 @@ func health(t *testing.T, turn int, composite float64, relevance, coherence *flo
 	t.Helper()
 	b, _ := json.Marshal(event.ScoreHealth{TurnScored: turn, Composite: composite, Relevance: relevance, Coherence: coherence, Details: details})
 	return event.Event{SessionID: "s", Turn: turn, Type: event.TypeScoreHealth, Payload: b}
+}
+
+func healthScores(t *testing.T, turn int, composite float64, saturation, staleness, relevance, coherence *float64) event.Event {
+	t.Helper()
+	b, _ := json.Marshal(event.ScoreHealth{TurnScored: turn, Composite: composite, Saturation: saturation, Staleness: staleness, Relevance: relevance, Coherence: coherence})
+	return event.Event{SessionID: "s", Turn: turn, Type: event.TypeScoreHealth, Payload: b}
+}
+
+type fakeSummarizer struct {
+	summary string
+	events  []event.Event
+}
+
+func (f *fakeSummarizer) Summarize(_ context.Context, events []event.Event) (string, int, error) {
+	f.events = append([]event.Event(nil), events...)
+	return f.summary, 12, nil
 }
 func visibleHistory(t *testing.T) []event.Event {
 	return []event.Event{

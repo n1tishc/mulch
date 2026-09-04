@@ -58,6 +58,38 @@ func TestRunRecordsCancelledResultsWhenHookWithholdsToolBatch(t *testing.T) {
 	}
 }
 
+func TestRunRecordsEscalatedTerminalStatusBeforePendingTools(t *testing.T) {
+	store := openStore(t)
+	toolRan := false
+	executor := tool.NewExecutor([]tool.Tool{orderingTool{call: func() { toolRan = true }}})
+	llm := &scriptedLLM{responses: []provider.Response{{Blocks: []provider.Block{{Type: "tool_use", CallID: "1", Name: "ordered", Input: `{}`}}}}}
+	id, err := agent.Run(t.Context(), agent.Dependencies{Store: store, LLM: llm, Tools: executor, Model: "fake", Workdir: ".", Hooks: []hook.Hook{escalatingHook{}}}, "test", func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if toolRan {
+		t.Fatal("tool ran after escalation")
+	}
+	session, err := store.Session(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Status != event.StatusEscalated {
+		t.Fatalf("status = %s", session.Status)
+	}
+	events, err := store.List(t.Context(), id, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ended event.SessionEnd
+	if err := find(t, events, event.TypeSessionEnd).Decode(&ended); err != nil {
+		t.Fatal(err)
+	}
+	if ended.Status != event.StatusEscalated {
+		t.Fatalf("session.end = %#v", ended)
+	}
+}
+
 type orderingHook struct{ call func() }
 
 func (*orderingHook) Name() string                                    { return "ordering" }
@@ -68,6 +100,14 @@ type withholdingHook struct{}
 func (withholdingHook) Name() string { return "withhold" }
 func (withholdingHook) BeforeTools(_ context.Context, turn *hook.Turn) error {
 	turn.ToolCalls = nil
+	return nil
+}
+
+type escalatingHook struct{}
+
+func (escalatingHook) Name() string { return "escalate" }
+func (escalatingHook) BeforeTools(_ context.Context, turn *hook.Turn) error {
+	turn.Cancel("health critically low")
 	return nil
 }
 

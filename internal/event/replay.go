@@ -51,6 +51,18 @@ func BuildMessages(events []Event, visibleSeqs []int64) ([]provider.Message, err
 				return nil, fmt.Errorf("decode %s: %w", e.Type, err)
 			}
 			messages = append(messages, provider.Message{Role: provider.RoleAssistant, Blocks: []provider.Block{{Type: "text", Text: p.Text}}})
+		case TypeContextInject:
+			var p ContextInject
+			if err := e.Decode(&p); err != nil {
+				return nil, fmt.Errorf("decode %s: %w", e.Type, err)
+			}
+			messages = append(messages, provider.Message{Role: provider.RoleUser, Blocks: []provider.Block{{Type: "text", Text: p.Text}}})
+		case TypeContextCompact:
+			var p ContextCompact
+			if err := e.Decode(&p); err != nil {
+				return nil, fmt.Errorf("decode %s: %w", e.Type, err)
+			}
+			messages = append(messages, provider.Message{Role: provider.RoleUser, Blocks: []provider.Block{{Type: "text", Text: "Compacted context:\n" + p.Summary}}})
 		case TypeAssistantToolCall:
 			var p AssistantToolCall
 			if err := e.Decode(&p); err != nil {

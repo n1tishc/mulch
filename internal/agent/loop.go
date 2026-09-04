@@ -241,13 +241,17 @@ func continueSession(ctx context.Context, deps Dependencies, id string, started 
 				toolBlocks = append(toolBlocks, block)
 			}
 		}
-		hookTurn := &hook.Turn{SessionID: id, Turn: turn, Visible: visible, ToolCalls: toolBlocks}
+		cancelReason := ""
+		hookTurn := &hook.Turn{SessionID: id, Turn: turn, Visible: visible, ToolCalls: toolBlocks, Cancel: func(reason string) { cancelReason = reason }}
 		for _, extension := range deps.Hooks {
 			if before, ok := extension.(hook.BeforeTools); ok {
 				if err = before.BeforeTools(ctx, hookTurn); err != nil {
 					return fail(fmt.Errorf("before tools hook %q: %w", extension.Name(), err), turn, totalInput, totalOutput)
 				}
 			}
+		}
+		if cancelReason != "" {
+			return id, finish(nil, event.StatusEscalated, turn, totalInput, totalOutput)
 		}
 		if len(hookTurn.ToolCalls) == 0 {
 			for _, call := range calls {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -163,6 +164,47 @@ func TestRunScoresRelevanceWhenEmbeddingProviderIsConfigured(t *testing.T) {
 		return
 	}
 	t.Fatal("missing score.health")
+}
+
+func TestRunNoInterveneKeepsHealthScoringAndPolicyIsValidated(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "mulch.db")
+	var stderr bytes.Buffer
+	if err := cli.Execute(t.Context(), []string{"run", "--no-intervene", "--db", db, "hello"}, cli.Options{Stdout: &bytes.Buffer{}, Stderr: &stderr, Getenv: testGetenv, LLMFactory: func(string, string) provider.LLM { return commandLLM{} }}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := event.Open(t.Context(), db, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.List(t.Context(), sessionID(t, stderr.String()), 1)
+	store.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eventTypesContain(events, event.TypeScoreHealth) {
+		t.Fatal("health scoring disabled by --no-intervene")
+	}
+	if eventTypesContain(events, event.TypeInterveneFire) || eventTypesContain(events, event.TypeInterveneSkip) {
+		t.Fatal("intervention event recorded with --no-intervene")
+	}
+
+	policy := filepath.Join(t.TempDir(), "invalid.json")
+	if err := os.WriteFile(policy, []byte(`{"warn_below":20,"prune_below":65}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	err = cli.Execute(t.Context(), []string{"run", "--db", filepath.Join(t.TempDir(), "invalid.db"), "--policy", policy, "hello"}, cli.Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Getenv: testGetenv, LLMFactory: func(string, string) provider.LLM { return commandLLM{} }})
+	if err == nil || !strings.Contains(err.Error(), "thresholds") {
+		t.Fatalf("invalid policy error = %v", err)
+	}
+}
+
+func eventTypesContain(events []event.Event, want event.Type) bool {
+	for _, candidate := range events {
+		if candidate.Type == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRunJSONWritesOnlyCommittedEventsAsJSONLines(t *testing.T) {

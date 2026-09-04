@@ -76,13 +76,15 @@ func resume(ctx context.Context, args []string, opts Options) error {
 	flags.SetOutput(opts.Stderr)
 	dbPath := flags.String("db", envOr(opts.Getenv, "MULCH_DB", defaultDB()), "event database")
 	jsonMode := flags.Bool("json", false, "write committed events as JSONL")
+	policyPath := flags.String("policy", "", "intervention policy JSON file")
+	noIntervene := flags.Bool("no-intervene", false, "score health without intervening")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() < 1 || flags.NArg() > 2 {
 		return errors.New("mulch resume requires a session ID and optional prompt")
 	}
-	return continueCLI(ctx, *dbPath, flags.Arg(0), optionalArg(flags.Args(), 1), *jsonMode, opts)
+	return continueCLI(ctx, *dbPath, flags.Arg(0), optionalArg(flags.Args(), 1), *jsonMode, *policyPath, *noIntervene, opts)
 }
 
 func branch(ctx context.Context, args []string, opts Options) error {
@@ -110,10 +112,10 @@ func branch(ctx context.Context, args []string, opts Options) error {
 	if err != nil || closeErr != nil {
 		return errors.Join(err, closeErr)
 	}
-	return continueCLI(ctx, *dbPath, child.ID, optionalArg(flags.Args(), 1), *jsonMode, opts)
+	return continueCLI(ctx, *dbPath, child.ID, optionalArg(flags.Args(), 1), *jsonMode, "", false, opts)
 }
 
-func continueCLI(ctx context.Context, dbPath, id, prompt string, jsonMode bool, opts Options) error {
+func continueCLI(ctx context.Context, dbPath, id, prompt string, jsonMode bool, policyPath string, noIntervene bool, opts Options) error {
 	key := opts.Getenv("MULCH_PROVIDER_API_KEY")
 	if key == "" {
 		return errors.New("MULCH_PROVIDER_API_KEY is required (set it in the environment or .env)")
@@ -145,17 +147,25 @@ func continueCLI(ctx context.Context, dbPath, id, prompt string, jsonMode bool, 
 	judge := opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL"))
 	coherence := score.NewCoherenceWithModel(judge, envOr(opts.Getenv, "MULCH_JUDGE_MODEL", session.Model))
 	scoring := score.NewRunnerWithWeights(store, session, healthScorers(opts, store, coherence), healthWeights(opts), history...)
-	ladder := intervene.New(store, intervene.DefaultPolicy(), coherence)
-	for _, recorded := range history {
-		ladder.OnEvent(ctx, recorded)
-	}
 	publisher.Add(scoring)
-	publisher.Add(ladder)
+	hooks := []hook.Hook{scoring}
+	if !noIntervene {
+		policy, policyErr := configuredPolicy(policyPath)
+		if policyErr != nil {
+			return policyErr
+		}
+		ladder := intervene.NewConfigured(store, policy, coherence).WithSummarizer(intervene.NewLLMSummarizer(judge, envOr(opts.Getenv, "MULCH_JUDGE_MODEL", session.Model)))
+		for _, recorded := range history {
+			ladder.OnEvent(ctx, recorded)
+		}
+		publisher.Add(ladder)
+		hooks = append(hooks, ladder)
+	}
 	emit := func(text string) { _, _ = io.WriteString(opts.Stdout, text) }
 	if jsonMode {
 		emit = func(string) {}
 	}
-	_, runErr := agent.Resume(ctx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: session.Model, Workdir: session.Workdir, ContextWindow: session.ContextWindow, Hooks: []hook.Hook{scoring, ladder}}, id, prompt, emit)
+	_, runErr := agent.Resume(ctx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: session.Model, Workdir: session.Workdir, ContextWindow: session.ContextWindow, Hooks: hooks}, id, prompt, emit)
 	if !jsonMode {
 		_, _ = fmt.Fprintf(opts.Stderr, "\nsession %s\n", id)
 	}
@@ -264,6 +274,8 @@ func run(ctx context.Context, args []string, opts Options) error {
 	contextWindow := flags.Int("context-window", 200000, "model context window in tokens")
 	dbPath := flags.String("db", envOr(opts.Getenv, "MULCH_DB", defaultDB()), "event database")
 	jsonMode := flags.Bool("json", false, "write committed events as JSONL")
+	policyPath := flags.String("policy", "", "intervention policy JSON file")
+	noIntervene := flags.Bool("no-intervene", false, "score health without intervening")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -296,14 +308,22 @@ func run(ctx context.Context, args []string, opts Options) error {
 	judge := opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL"))
 	coherence := score.NewCoherenceWithModel(judge, envOr(opts.Getenv, "MULCH_JUDGE_MODEL", *model))
 	scoring := score.NewRunnerWithWeights(store, event.Session{Task: flags.Arg(0), Model: *model, Workdir: *workdir, ContextWindow: *contextWindow}, healthScorers(opts, store, coherence), healthWeights(opts))
-	ladder := intervene.New(store, intervene.DefaultPolicy(), coherence)
 	publisher.Add(scoring)
-	publisher.Add(ladder)
+	hooks := []hook.Hook{scoring}
+	if !*noIntervene {
+		policy, policyErr := configuredPolicy(*policyPath)
+		if policyErr != nil {
+			return policyErr
+		}
+		ladder := intervene.NewConfigured(store, policy, coherence).WithSummarizer(intervene.NewLLMSummarizer(judge, envOr(opts.Getenv, "MULCH_JUDGE_MODEL", *model)))
+		publisher.Add(ladder)
+		hooks = append(hooks, ladder)
+	}
 	emit := func(text string) { _, _ = io.WriteString(opts.Stdout, text) }
 	if *jsonMode {
 		emit = func(string) {}
 	}
-	id, runErr := agent.Run(ctx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: *model, Workdir: *workdir, ContextWindow: *contextWindow, Hooks: []hook.Hook{scoring, ladder}}, flags.Arg(0), emit)
+	id, runErr := agent.Run(ctx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: *model, Workdir: *workdir, ContextWindow: *contextWindow, Hooks: hooks}, flags.Arg(0), emit)
 	if id != "" {
 		if !*jsonMode {
 			_, _ = fmt.Fprintf(opts.Stderr, "\nsession %s\n", id)
@@ -316,6 +336,13 @@ func run(ctx context.Context, args []string, opts Options) error {
 		return errors.Join(runErr, healthOutput.err)
 	}
 	return runErr
+}
+
+func configuredPolicy(path string) (intervene.Policy, error) {
+	if path == "" {
+		return intervene.DefaultPolicy(), nil
+	}
+	return intervene.LoadPolicy(path)
 }
 
 func healthScorers(opts Options, cache provider.EmbeddingCache, coherence *score.Coherence) []score.Scorer {

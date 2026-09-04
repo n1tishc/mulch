@@ -3,6 +3,7 @@ package intervene
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -13,10 +14,15 @@ import (
 )
 
 type Policy struct {
-	WarnBelow, PruneBelow, CompactBelow, ReanchorBelow, EscalateBelow float64
-	Hysteresis                                                        float64
-	CooldownTurns, ConfirmTurns                                       int
-	MaxPruneShare                                                     float64
+	WarnBelow     float64 `json:"warn_below"`
+	PruneBelow    float64 `json:"prune_below"`
+	CompactBelow  float64 `json:"compact_below"`
+	ReanchorBelow float64 `json:"reanchor_below"`
+	EscalateBelow float64 `json:"escalate_below"`
+	Hysteresis    float64 `json:"hysteresis"`
+	CooldownTurns int     `json:"cooldown_turns"`
+	ConfirmTurns  int     `json:"confirm_turns"`
+	MaxPruneShare float64 `json:"max_prune_share"`
 }
 
 func DefaultPolicy() Policy {
@@ -29,6 +35,9 @@ type Store interface {
 }
 type healthRecord struct{ health event.ScoreHealth }
 type CoherenceRequester interface{ Request() }
+type Summarizer interface {
+	Summarize(context.Context, []event.Event) (summary string, tokens int, err error)
+}
 type Ladder struct {
 	store       Store
 	policy      Policy
@@ -36,7 +45,10 @@ type Ladder struct {
 	history     []healthRecord
 	lastApplied int
 	coherence   CoherenceRequester
+	summarizer  Summarizer
 }
+
+func (l *Ladder) WithSummarizer(s Summarizer) *Ladder { l.summarizer = s; return l }
 
 func New(store Store, policy Policy, requester ...CoherenceRequester) *Ladder {
 	d := DefaultPolicy()
@@ -67,7 +79,16 @@ func New(store Store, policy Policy, requester ...CoherenceRequester) *Ladder {
 	if policy.MaxPruneShare != 0 {
 		d.MaxPruneShare = policy.MaxPruneShare
 	}
-	ladder := &Ladder{store: store, policy: d}
+	return newLadder(store, d, requester...)
+}
+
+// NewConfigured uses a complete, validated policy without treating zero values as omitted.
+func NewConfigured(store Store, policy Policy, requester ...CoherenceRequester) *Ladder {
+	return newLadder(store, policy, requester...)
+}
+
+func newLadder(store Store, policy Policy, requester ...CoherenceRequester) *Ladder {
+	ladder := &Ladder{store: store, policy: policy}
 	if len(requester) > 0 {
 		ladder.coherence = requester[0]
 	}
@@ -114,7 +135,8 @@ func (l *Ladder) BeforeTools(ctx context.Context, turn *hook.Turn) error {
 		return l.skip(ctx, turn, latest.TurnScored, "score is too old")
 	}
 	if lastApplied > 0 && turn.Turn-lastApplied <= l.policy.CooldownTurns {
-		return l.skip(ctx, turn, latest.TurnScored, "intervention cooldown")
+		action, _ := l.route(latest)
+		return l.skip(ctx, turn, latest.TurnScored, "intervention cooldown skipped "+action)
 	}
 	confirm := l.policy.ConfirmTurns
 	if confirm < 1 {
@@ -147,6 +169,9 @@ func (l *Ladder) BeforeTools(ctx context.Context, turn *hook.Turn) error {
 	if err = l.append(ctx, turn, event.TypeInterveneFire, event.InterveneFire{Action: action, Reason: reason, TurnScored: latest.TurnScored, AppliedBeforeTurn: turn.Turn, AffectedSeqs: affected}); err != nil {
 		return err
 	}
+	if action == "escalate" && turn.Cancel != nil {
+		turn.Cancel(reason)
+	}
 	l.mu.Lock()
 	l.lastApplied = turn.Turn
 	l.mu.Unlock()
@@ -154,26 +179,69 @@ func (l *Ladder) BeforeTools(ctx context.Context, turn *hook.Turn) error {
 }
 
 func (l *Ladder) route(h event.ScoreHealth) (string, string) {
+	if h.Composite < l.policy.EscalateBelow {
+		return "escalate", fmt.Sprintf("health is critically low at %.0f", h.Composite)
+	}
 	weak, value := "composite", h.Composite/100
-	for name, candidate := range map[string]*float64{"saturation": h.Saturation, "staleness": h.Staleness, "relevance": h.Relevance, "coherence": h.Coherence} {
+	for _, score := range []struct {
+		name  string
+		value *float64
+	}{{"saturation", h.Saturation}, {"staleness", h.Staleness}, {"relevance", h.Relevance}, {"coherence", h.Coherence}} {
+		name, candidate := score.name, score.value
 		if candidate != nil && *candidate < value {
 			weak, value = name, *candidate
 		}
 	}
 	switch weak {
 	case "relevance":
+		if h.Composite >= l.policy.PruneBelow {
+			return "warn", fmt.Sprintf("relevance is %.2f", value)
+		}
 		return "prune", fmt.Sprintf("relevance is %.2f", value)
 	case "coherence":
+		if h.Composite >= l.policy.ReanchorBelow {
+			return "warn", fmt.Sprintf("coherence is %.2f", value)
+		}
 		return "reanchor", fmt.Sprintf("coherence is %.2f", value)
 	case "staleness":
+		if h.Composite >= l.policy.ReanchorBelow {
+			return "warn", fmt.Sprintf("staleness is %.2f", value)
+		}
 		return "reanchor", fmt.Sprintf("staleness is %.2f", value)
 	case "saturation":
+		if h.Composite < l.policy.CompactBelow && l.summarizer != nil {
+			return "compact", fmt.Sprintf("saturation is %.2f", value)
+		}
 		return "warn", fmt.Sprintf("saturation is %.2f", value)
 	}
 	return "warn", fmt.Sprintf("health is %.0f", h.Composite)
 }
 func (l *Ladder) apply(ctx context.Context, turn *hook.Turn, h event.ScoreHealth, action, reason string) ([]int64, bool, error) {
 	switch action {
+	case "escalate":
+		return nil, true, nil
+	case "compact":
+		seqs, span, tokensBefore := compactCandidates(turn.Visible)
+		if len(seqs) == 0 {
+			return nil, false, l.skip(ctx, turn, h.TurnScored, "no eligible context to compact")
+		}
+		summary, tokensAfter, err := l.summarizer.Summarize(ctx, span)
+		if err != nil {
+			return nil, false, fmt.Errorf("summarize compacted context: %w", err)
+		}
+		if summary == "" {
+			return nil, false, l.skip(ctx, turn, h.TurnScored, "compaction produced an empty summary")
+		}
+		if err := l.store.SetVisibleBecause(ctx, turn.SessionID, seqs, false, reason, l.Name()); err != nil {
+			return nil, false, err
+		}
+		payload, _ := json.Marshal(event.ContextCompact{ReplacedSeqs: seqs, Summary: summary, TokensBefore: tokensBefore, TokensAfter: tokensAfter, By: l.Name()})
+		_, err = l.store.Append(ctx, event.Event{SessionID: turn.SessionID, Turn: turn.Turn, Type: event.TypeContextCompact, Payload: payload, Visible: true})
+		if err != nil {
+			rollbackErr := l.store.SetVisibleBecause(ctx, turn.SessionID, seqs, true, "compaction replacement failed", l.Name())
+			return nil, false, errors.Join(err, rollbackErr)
+		}
+		return seqs, true, err
 	case "prune":
 		seqs := pruneCandidates(turn.Visible, h, l.policy.MaxPruneShare)
 		if len(seqs) == 0 {
@@ -204,6 +272,55 @@ func (l *Ladder) apply(ctx context.Context, turn *hook.Turn, h event.ScoreHealth
 		_, err := l.store.Append(ctx, event.Event{SessionID: turn.SessionID, Turn: turn.Turn, Type: event.TypeContextInject, Payload: payload, Visible: true})
 		return nil, true, err
 	}
+}
+func compactCandidates(visible []event.Event) ([]int64, []event.Event, int) {
+	latest := 0
+	for _, candidate := range visible {
+		if candidate.Turn > latest {
+			latest = candidate.Turn
+		}
+	}
+	var eligible []event.Event
+	var turns []int
+	seenTurn := map[int]bool{}
+	for _, candidate := range visible {
+		if candidate.Type == event.TypeSystemPrompt || candidate.Type == event.TypeUserMessage || candidate.Type == event.TypeContextCompact || candidate.Turn >= latest-1 {
+			continue
+		}
+		eligible = append(eligible, candidate)
+		if !seenTurn[candidate.Turn] {
+			seenTurn[candidate.Turn] = true
+			turns = append(turns, candidate.Turn)
+		}
+	}
+	if len(eligible) == 0 {
+		return nil, nil, 0
+	}
+	n := len(turns) / 2
+	if n == 0 {
+		n = 1
+	}
+	selected := map[int]bool{}
+	for _, turn := range turns[:n] {
+		selected[turn] = true
+	}
+	var span []event.Event
+	for _, candidate := range eligible {
+		if selected[candidate.Turn] {
+			span = append(span, candidate)
+		}
+	}
+	seqs := make([]int64, 0, len(span))
+	tokens := 0
+	for _, candidate := range span {
+		seqs = append(seqs, candidate.Seq)
+		if candidate.Tokens != nil {
+			tokens += *candidate.Tokens
+		} else {
+			tokens++
+		}
+	}
+	return seqs, span, tokens
 }
 func pruneCandidates(visible []event.Event, h event.ScoreHealth, share float64) []int64 {
 	if share <= 0 {

@@ -28,6 +28,24 @@ func TestBuildMessagesReconstructsProviderInput(t *testing.T) {
 	}
 }
 
+func TestBuildMessagesIncludesInterventionContext(t *testing.T) {
+	events := []event.Event{
+		{Seq: 1, Type: event.TypeContextInject, Payload: payload(t, event.ContextInject{Text: "recheck the task"})},
+		{Seq: 2, Type: event.TypeContextCompact, Payload: payload(t, event.ContextCompact{Summary: "Paths: main.go. Decision: keep SQLite. Open question: timeout?"})},
+	}
+	want := []provider.Message{
+		{Role: provider.RoleUser, Blocks: []provider.Block{{Type: "text", Text: "recheck the task"}}},
+		{Role: provider.RoleUser, Blocks: []provider.Block{{Type: "text", Text: "Compacted context:\nPaths: main.go. Decision: keep SQLite. Open question: timeout?"}}},
+	}
+	got, err := event.BuildMessages(events, []int64{1, 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("messages = %#v, want %#v", got, want)
+	}
+}
+
 func TestPayloadsUseCanonicalJSONKeys(t *testing.T) {
 	got := string(payload(t, event.SessionEnd{Status: event.StatusCompleted, Turns: 1, TotalInputTokens: 2, TotalOutputTokens: 3, WallMS: 4}))
 	want := `{"status":"completed","turns":1,"total_input_tokens":2,"total_output_tokens":3,"wall_ms":4}`
