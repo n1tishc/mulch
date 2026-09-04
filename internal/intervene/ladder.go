@@ -38,6 +38,17 @@ type CoherenceRequester interface{ Request() }
 type Summarizer interface {
 	Summarize(context.Context, []event.Event) (summary string, tokens int, err error)
 }
+
+type Action string
+
+const (
+	ActionWarn     Action = "warn"
+	ActionPrune    Action = "prune"
+	ActionCompact  Action = "compact"
+	ActionReanchor Action = "reanchor"
+	ActionEscalate Action = "escalate"
+)
+
 type Ladder struct {
 	store       Store
 	policy      Policy
@@ -136,7 +147,7 @@ func (l *Ladder) BeforeTools(ctx context.Context, turn *hook.Turn) error {
 	}
 	if lastApplied > 0 && turn.Turn-lastApplied <= l.policy.CooldownTurns {
 		action, _ := l.route(latest)
-		return l.skip(ctx, turn, latest.TurnScored, "intervention cooldown skipped "+action)
+		return l.skip(ctx, turn, latest.TurnScored, "intervention cooldown skipped "+string(action))
 	}
 	confirm := l.policy.ConfirmTurns
 	if confirm < 1 {
@@ -146,15 +157,24 @@ func (l *Ladder) BeforeTools(ctx context.Context, turn *hook.Turn) error {
 		if l.coherence != nil {
 			l.coherence.Request()
 		}
-		return l.skip(ctx, turn, latest.TurnScored, "awaiting score confirmation")
+		action, _ := l.route(latest)
+		return l.skip(ctx, turn, latest.TurnScored, "awaiting score confirmation for "+string(action))
 	}
 	threshold := l.policy.WarnBelow
 	if lastApplied > 0 {
 		threshold -= l.policy.Hysteresis
 	}
-	for _, record := range history[len(history)-confirm:] {
+	window := history[len(history)-confirm:]
+	for _, record := range window {
 		if record.health.Composite >= threshold {
-			return l.skip(ctx, turn, latest.TurnScored, "health recovered within confirmation window")
+			weakest := window[0].health
+			for _, candidate := range window[1:] {
+				if candidate.health.Composite < weakest.Composite {
+					weakest = candidate.health
+				}
+			}
+			action, _ := l.route(weakest)
+			return l.skip(ctx, turn, latest.TurnScored, "health recovered within confirmation window; skipped "+string(action))
 		}
 	}
 	action, reason := l.route(latest)
@@ -166,10 +186,10 @@ func (l *Ladder) BeforeTools(ctx context.Context, turn *hook.Turn) error {
 		return nil
 	}
 	turn.ToolCalls = nil
-	if err = l.append(ctx, turn, event.TypeInterveneFire, event.InterveneFire{Action: action, Reason: reason, TurnScored: latest.TurnScored, AppliedBeforeTurn: turn.Turn, AffectedSeqs: affected}); err != nil {
+	if err = l.append(ctx, turn, event.TypeInterveneFire, event.InterveneFire{Action: string(action), Reason: reason, TurnScored: latest.TurnScored, AppliedBeforeTurn: turn.Turn, AffectedSeqs: affected}); err != nil {
 		return err
 	}
-	if action == "escalate" && turn.Cancel != nil {
+	if action == ActionEscalate && turn.Cancel != nil {
 		turn.Cancel(reason)
 	}
 	l.mu.Lock()
@@ -178,9 +198,9 @@ func (l *Ladder) BeforeTools(ctx context.Context, turn *hook.Turn) error {
 	return nil
 }
 
-func (l *Ladder) route(h event.ScoreHealth) (string, string) {
+func (l *Ladder) route(h event.ScoreHealth) (Action, string) {
 	if h.Composite < l.policy.EscalateBelow {
-		return "escalate", fmt.Sprintf("health is critically low at %.0f", h.Composite)
+		return ActionEscalate, fmt.Sprintf("health is critically low at %.0f", h.Composite)
 	}
 	weak, value := "composite", h.Composite/100
 	for _, score := range []struct {
@@ -195,32 +215,32 @@ func (l *Ladder) route(h event.ScoreHealth) (string, string) {
 	switch weak {
 	case "relevance":
 		if h.Composite >= l.policy.PruneBelow {
-			return "warn", fmt.Sprintf("relevance is %.2f", value)
+			return ActionWarn, fmt.Sprintf("relevance is %.2f", value)
 		}
-		return "prune", fmt.Sprintf("relevance is %.2f", value)
+		return ActionPrune, fmt.Sprintf("relevance is %.2f", value)
 	case "coherence":
 		if h.Composite >= l.policy.ReanchorBelow {
-			return "warn", fmt.Sprintf("coherence is %.2f", value)
+			return ActionWarn, fmt.Sprintf("coherence is %.2f", value)
 		}
-		return "reanchor", fmt.Sprintf("coherence is %.2f", value)
+		return ActionReanchor, fmt.Sprintf("coherence is %.2f", value)
 	case "staleness":
 		if h.Composite >= l.policy.ReanchorBelow {
-			return "warn", fmt.Sprintf("staleness is %.2f", value)
+			return ActionWarn, fmt.Sprintf("staleness is %.2f", value)
 		}
-		return "reanchor", fmt.Sprintf("staleness is %.2f", value)
+		return ActionReanchor, fmt.Sprintf("staleness is %.2f", value)
 	case "saturation":
 		if h.Composite < l.policy.CompactBelow && l.summarizer != nil {
-			return "compact", fmt.Sprintf("saturation is %.2f", value)
+			return ActionCompact, fmt.Sprintf("saturation is %.2f", value)
 		}
-		return "warn", fmt.Sprintf("saturation is %.2f", value)
+		return ActionWarn, fmt.Sprintf("saturation is %.2f", value)
 	}
-	return "warn", fmt.Sprintf("health is %.0f", h.Composite)
+	return ActionWarn, fmt.Sprintf("health is %.0f", h.Composite)
 }
-func (l *Ladder) apply(ctx context.Context, turn *hook.Turn, h event.ScoreHealth, action, reason string) ([]int64, bool, error) {
+func (l *Ladder) apply(ctx context.Context, turn *hook.Turn, h event.ScoreHealth, action Action, reason string) ([]int64, bool, error) {
 	switch action {
-	case "escalate":
+	case ActionEscalate:
 		return nil, true, nil
-	case "compact":
+	case ActionCompact:
 		seqs, span, tokensBefore := compactCandidates(turn.Visible)
 		if len(seqs) == 0 {
 			return nil, false, l.skip(ctx, turn, h.TurnScored, "no eligible context to compact")
@@ -242,13 +262,13 @@ func (l *Ladder) apply(ctx context.Context, turn *hook.Turn, h event.ScoreHealth
 			return nil, false, errors.Join(err, rollbackErr)
 		}
 		return seqs, true, err
-	case "prune":
+	case ActionPrune:
 		seqs := pruneCandidates(turn.Visible, h, l.policy.MaxPruneShare)
 		if len(seqs) == 0 {
 			return nil, false, l.skip(ctx, turn, h.TurnScored, "no eligible context to prune")
 		}
 		return seqs, true, l.store.SetVisibleBecause(ctx, turn.SessionID, seqs, false, reason, l.Name())
-	case "reanchor":
+	case ActionReanchor:
 		task := ""
 		for _, candidate := range turn.Visible {
 			if candidate.Type == event.TypeUserMessage {

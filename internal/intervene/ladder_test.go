@@ -3,6 +3,8 @@ package intervene_test
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/n1tishc/mulch/internal/event"
@@ -122,6 +124,98 @@ func TestSyntheticSessionExercisesEveryLadderAction(t *testing.T) {
 				t.Fatalf("action = %q, want %q", store.lastFire.Action, tc.action)
 			}
 		})
+	}
+}
+
+func TestSyntheticSessionLogReconstructsContextAfterEveryAction(t *testing.T) {
+	store, err := event.Open(t.Context(), filepath.Join(t.TempDir(), "events.db"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const id = "synthetic-ladder"
+	if err := store.CreateSession(t.Context(), event.Session{ID: id, Task: "preserve the event log", Model: "fake", Workdir: "."}); err != nil {
+		t.Fatal(err)
+	}
+	appendEvent := func(turn int, typ event.Type, value any) event.Event {
+		encoded, _ := json.Marshal(value)
+		got, appendErr := store.Append(t.Context(), event.Event{SessionID: id, Turn: turn, Type: typ, Payload: encoded, Visible: true})
+		if appendErr != nil {
+			t.Fatal(appendErr)
+		}
+		return got
+	}
+	appendEvent(0, event.TypeSystemPrompt, event.SystemPrompt{Text: "system"})
+	appendEvent(0, event.TypeUserMessage, event.UserMessage{Text: "preserve the event log", Origin: "task"})
+	appendEvent(1, event.TypeAssistantMessage, event.AssistantMessage{Text: "old path internal/agent/loop.go"})
+	prunable := appendEvent(2, event.TypeAssistantMessage, event.AssistantMessage{Text: "irrelevant distraction"})
+	appendEvent(3, event.TypeAssistantMessage, event.AssistantMessage{Text: "recent work"})
+
+	apply := func(turn int, score event.ScoreHealth) (bool, []provider.Message) {
+		ladder := intervene.New(store, intervene.Policy{ConfirmTurns: 1}).WithSummarizer(&fakeSummarizer{summary: "Paths: internal/agent/loop.go. Decisions: preserve the event log. Open questions: none."})
+		encoded, _ := json.Marshal(score)
+		ladder.OnEvent(t.Context(), event.Event{SessionID: id, Turn: score.TurnScored, Type: event.TypeScoreHealth, Payload: encoded})
+		visible, visibleErr := store.Visible(t.Context(), id)
+		if visibleErr != nil {
+			t.Fatal(visibleErr)
+		}
+		cancelled := false
+		if err := ladder.BeforeTools(t.Context(), &hook.Turn{SessionID: id, Turn: turn, Visible: visible, ToolCalls: []provider.Block{{Type: "tool_use"}}, Cancel: func(string) { cancelled = true }}); err != nil {
+			t.Fatal(err)
+		}
+		all, listErr := store.List(t.Context(), id, 1)
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		visible, visibleErr = store.Visible(t.Context(), id)
+		if visibleErr != nil {
+			t.Fatal(visibleErr)
+		}
+		seqs := make([]int64, len(visible))
+		for i := range visible {
+			seqs[i] = visible[i].Seq
+		}
+		messages, buildErr := event.BuildMessages(all, seqs)
+		if buildErr != nil {
+			t.Fatal(buildErr)
+		}
+		return cancelled, messages
+	}
+	joined := func(messages []provider.Message) string {
+		var parts []string
+		for _, message := range messages {
+			for _, block := range message.Blocks {
+				parts = append(parts, block.Text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+
+	low := .1
+	_, messages := apply(4, event.ScoreHealth{TurnScored: 3, Composite: 75, Saturation: &low})
+	if !strings.Contains(joined(messages), "Context health warning") {
+		t.Fatal("warn injection was not reconstructable")
+	}
+	_, messages = apply(6, event.ScoreHealth{
+		TurnScored: 5, Composite: 60, Relevance: &low,
+		Details: map[string]map[string]any{
+			"relevance": {"lowest": []any{map[string]any{"seq": prunable.Seq, "similarity": .1}}},
+		},
+	})
+	if strings.Contains(joined(messages), "irrelevant distraction") {
+		t.Fatal("pruned event remained model-visible")
+	}
+	_, messages = apply(8, event.ScoreHealth{TurnScored: 7, Composite: 45, Saturation: &low})
+	if strings.Contains(joined(messages), "old path") || !strings.Contains(joined(messages), "Compacted context:") {
+		t.Fatal("compaction replacement was not reconstructable")
+	}
+	_, messages = apply(10, event.ScoreHealth{TurnScored: 9, Composite: 35, Coherence: &low})
+	if !strings.Contains(joined(messages), "Reanchor on the original task: preserve the event log") {
+		t.Fatal("reanchor was not reconstructable")
+	}
+	cancelled, messages := apply(12, event.ScoreHealth{TurnScored: 11, Composite: 20})
+	if !cancelled || len(messages) == 0 {
+		t.Fatal("escalation terminal snapshot was not reconstructable")
 	}
 }
 

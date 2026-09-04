@@ -94,6 +94,8 @@ func branch(ctx context.Context, args []string, opts Options) error {
 	dbPath := flags.String("db", envOr(opts.Getenv, "MULCH_DB", defaultDB()), "event database")
 	at := flags.Int64("at", -1, "parent sequence to branch from")
 	jsonMode := flags.Bool("json", false, "write committed events as JSONL")
+	policyPath := flags.String("policy", "", "intervention policy JSON file")
+	noIntervene := flags.Bool("no-intervene", false, "score health without intervening")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -112,7 +114,7 @@ func branch(ctx context.Context, args []string, opts Options) error {
 	if err != nil || closeErr != nil {
 		return errors.Join(err, closeErr)
 	}
-	return continueCLI(ctx, *dbPath, child.ID, optionalArg(flags.Args(), 1), *jsonMode, "", false, opts)
+	return continueCLI(ctx, *dbPath, child.ID, optionalArg(flags.Args(), 1), *jsonMode, *policyPath, *noIntervene, opts)
 }
 
 func continueCLI(ctx context.Context, dbPath, id, prompt string, jsonMode bool, policyPath string, noIntervene bool, opts Options) error {
@@ -250,11 +252,11 @@ func optionalArg(args []string, index int) string {
 func intersperseBranchFlags(args []string) []string {
 	var flags, positional []string
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--json" {
+		if args[i] == "--json" || args[i] == "--no-intervene" {
 			flags = append(flags, args[i])
 			continue
 		}
-		if args[i] == "--at" || args[i] == "--db" {
+		if args[i] == "--at" || args[i] == "--db" || args[i] == "--policy" {
 			if i+1 < len(args) {
 				flags = append(flags, args[i], args[i+1])
 				i++

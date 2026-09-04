@@ -69,7 +69,7 @@ func TestBranchTreeSessionsAndLabelCommands(t *testing.T) {
 	}
 	root := sessionID(t, runErr.String())
 	var branchErr bytes.Buffer
-	if err := cli.Execute(t.Context(), []string{"branch", root, "--at", "3", "fork task", "--db", db}, cli.Options{Stdout: &bytes.Buffer{}, Stderr: &branchErr, Getenv: testGetenv, LLMFactory: func(string, string) provider.LLM { return commandLLM{} }}); err != nil {
+	if err := cli.Execute(t.Context(), []string{"branch", root, "--at", "3", "fork task", "--db", db, "--no-intervene"}, cli.Options{Stdout: &bytes.Buffer{}, Stderr: &branchErr, Getenv: testGetenv, LLMFactory: func(string, string) provider.LLM { return commandLLM{} }}); err != nil {
 		t.Fatal(err)
 	}
 	child := sessionID(t, branchErr.String())
