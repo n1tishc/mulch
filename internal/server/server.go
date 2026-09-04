@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	"github.com/n1tishc/mulch/internal/event"
 )
 
@@ -24,6 +26,28 @@ type Store interface {
 	Session(context.Context, string) (event.Session, error)
 	List(context.Context, string, int64) ([]event.Event, error)
 	Tree(context.Context, string) (event.Node, error)
+	Branch(context.Context, string, int64) (event.Session, error)
+}
+
+type StartRequest struct {
+	Task string `json:"task"`
+	Opts struct {
+		Workdir string `json:"workdir"`
+	} `json:"opts"`
+}
+type BranchRequest struct {
+	At int64 `json:"at"`
+}
+type SessionResponse struct {
+	ID string `json:"id"`
+}
+
+type Control interface {
+	Start(context.Context, StartRequest) (string, error)
+	Steer(string, string) error
+	Branch(context.Context, string, BranchRequest) (event.Session, error)
+	Cancel(string) error
+	Subscribe(context.Context, string) (<-chan event.Event, error)
 }
 
 type Metrics struct {
@@ -34,15 +58,24 @@ type Metrics struct {
 
 type Server struct {
 	store   Store
+	control Control
 	handler http.Handler
 }
 
-func New(store Store) *Server {
+func New(store Store, controls ...Control) *Server {
 	s := &Server{store: store}
+	if len(controls) > 0 {
+		s.control = controls[0]
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/sessions", s.sessions)
 	mux.HandleFunc("GET /api/sessions/{id}/events", s.events)
 	mux.HandleFunc("GET /api/sessions/{id}/tree", s.tree)
+	mux.HandleFunc("POST /api/sessions", s.start)
+	mux.HandleFunc("POST /api/sessions/{id}/steer", s.steer)
+	mux.HandleFunc("POST /api/sessions/{id}/branch", s.branch)
+	mux.HandleFunc("DELETE /api/sessions/{id}", s.cancel)
+	mux.HandleFunc("GET /ws/sessions/{id}", s.sessionStream)
 	mux.HandleFunc("GET /api/metrics", s.metrics)
 	assets, err := fs.Sub(viewer, "ui_dist")
 	if err != nil {
@@ -51,6 +84,177 @@ func New(store Store) *Server {
 	mux.Handle("/", spa(http.FileServer(http.FS(assets)), assets))
 	s.handler = mux
 	return s
+}
+
+func (s *Server) start(w http.ResponseWriter, r *http.Request) {
+	if !s.requireControl(w) {
+		return
+	}
+	var request StartRequest
+	if !decodeRequest(w, r, &request) {
+		return
+	}
+	if strings.TrimSpace(request.Task) == "" {
+		http.Error(w, "task is required", http.StatusBadRequest)
+		return
+	}
+	id, err := s.control.Start(r.Context(), request)
+	writeAccepted(w, SessionResponse{ID: id}, err)
+}
+
+func (s *Server) steer(w http.ResponseWriter, r *http.Request) {
+	if !s.requireControl(w) {
+		return
+	}
+	var request struct {
+		Text string `json:"text"`
+	}
+	if !decodeRequest(w, r, &request) {
+		return
+	}
+	if strings.TrimSpace(request.Text) == "" {
+		http.Error(w, "text is required", http.StatusBadRequest)
+		return
+	}
+	writeAccepted(w, SessionResponse{ID: r.PathValue("id")}, s.control.Steer(r.PathValue("id"), request.Text))
+}
+
+func (s *Server) branch(w http.ResponseWriter, r *http.Request) {
+	if !s.requireControl(w) {
+		return
+	}
+	var request BranchRequest
+	if !decodeRequest(w, r, &request) {
+		return
+	}
+	if request.At < 0 {
+		http.Error(w, "at must be a non-negative sequence", http.StatusBadRequest)
+		return
+	}
+	child, err := s.control.Branch(r.Context(), r.PathValue("id"), request)
+	writeAccepted(w, SessionResponse{ID: child.ID}, err)
+}
+
+func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
+	if !s.requireControl(w) {
+		return
+	}
+	writeAccepted(w, SessionResponse{ID: r.PathValue("id")}, s.control.Cancel(r.PathValue("id")))
+}
+
+func (s *Server) requireControl(w http.ResponseWriter) bool {
+	if s.control == nil {
+		http.Error(w, "live session control is unavailable", http.StatusServiceUnavailable)
+		return false
+	}
+	return true
+}
+
+func decodeRequest(w http.ResponseWriter, r *http.Request, dst any) bool {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
+func writeAccepted(w http.ResponseWriter, value any, err error) {
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func (s *Server) sessionStream(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.store.Session(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	from := int64(1)
+	if raw := r.URL.Query().Get("from"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 0 {
+			http.Error(w, "from must be a non-negative sequence", http.StatusBadRequest)
+			return
+		}
+		from = parsed
+	}
+	var live <-chan event.Event
+	if s.control != nil {
+		live, _ = s.control.Subscribe(r.Context(), id)
+	}
+	history, err := s.store.List(r.Context(), id, from)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	conn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.CloseNow()
+	last := from - 1
+	for _, item := range history {
+		if err = wsjson.Write(r.Context(), conn, item); err != nil {
+			return
+		}
+		last = item.Seq
+	}
+	if live == nil {
+		_ = conn.Close(websocket.StatusNormalClosure, "history complete")
+		return
+	}
+	flush := func() (bool, error) {
+		items, listErr := s.store.List(r.Context(), id, last+1)
+		if listErr != nil {
+			return false, listErr
+		}
+		ended := false
+		for _, item := range items {
+			if writeErr := wsjson.Write(r.Context(), conn, item); writeErr != nil {
+				return false, writeErr
+			}
+			last = item.Seq
+			ended = ended || item.Type == event.TypeSessionEnd
+		}
+		return ended, nil
+	}
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case _, ok := <-live:
+			ended, flushErr := flush()
+			if flushErr != nil {
+				return
+			}
+			if ended {
+				_ = conn.Close(websocket.StatusNormalClosure, "session complete")
+				return
+			}
+			if !ok {
+				_ = conn.Close(websocket.StatusNormalClosure, "subscription closed")
+				return
+			}
+		case <-ticker.C:
+			ended, flushErr := flush()
+			if flushErr != nil {
+				return
+			}
+			if ended {
+				_ = conn.Close(websocket.StatusNormalClosure, "session complete")
+				return
+			}
+		case <-r.Context().Done():
+			return
+		}
+	}
 }
 
 func (s *Server) Handler() http.Handler { return s.handler }

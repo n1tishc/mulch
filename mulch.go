@@ -67,17 +67,25 @@ func Open(opts Options) (*Harness, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := session.New(session.Options{MaxSessions: opts.MaxSessions, Bus: eventBus, Close: store.Close, Run: func(ctx context.Context, id, task string, run session.RunOpts, steering *session.Steering) error {
+	runDeps := func(run session.RunOpts, steering *session.Steering) agent.Dependencies {
 		workdir := run.Workdir
 		if workdir == "" {
 			workdir = "."
 		}
 		executor := tool.NewExecutor([]tool.Tool{tool.NewRead(workdir), tool.NewWrite(workdir), tool.NewEdit(workdir), tool.NewBash(workdir)})
 		hooks := append([]hook.Hook{steering.Bind(store)}, opts.Hooks...)
-		_, runErr := agent.RunSession(ctx, agent.Dependencies{Store: store, LLM: provider.NewOpenAI(opts.APIKey, opts.BaseURL), Tools: executor, Model: opts.Model, Workdir: workdir, ContextWindow: opts.ContextWindow, MaxTurns: opts.MaxTurns, Hooks: hooks}, id, task, nil)
+		return agent.Dependencies{Store: store, LLM: provider.NewOpenAI(opts.APIKey, opts.BaseURL), Tools: executor, Model: opts.Model, Workdir: workdir, ContextWindow: opts.ContextWindow, MaxTurns: opts.MaxTurns, Hooks: hooks}
+	}
+	m := session.New(session.Options{MaxSessions: opts.MaxSessions, Bus: eventBus, Close: store.Close, Run: func(ctx context.Context, id, task string, run session.RunOpts, steering *session.Steering) error {
+		_, runErr := agent.RunSession(ctx, runDeps(run, steering), id, task, nil)
+		return runErr
+	}, Resume: func(ctx context.Context, id, task string, run session.RunOpts, steering *session.Steering) error {
+		_, runErr := agent.Resume(ctx, runDeps(run, steering), id, task, nil)
 		return runErr
 	}})
-	return &Harness{manager: m, server: server.New(store)}, nil
+	h := &Harness{manager: m}
+	h.server = server.New(store, server.NewControl(m, store))
+	return h, nil
 }
 
 func (h *Harness) Run(ctx context.Context, task string, opts RunOpts) (string, error) {

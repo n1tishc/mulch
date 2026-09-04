@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -364,6 +367,66 @@ func testGetenv(key string) string {
 type captureLLM struct {
 	mu      sync.Mutex
 	request provider.Request
+}
+
+func TestRunSubmitsToHealthyDaemonWithoutProviderKey(t *testing.T) {
+	var request struct {
+		Task string `json:"task"`
+		Opts struct {
+			Workdir string `json:"workdir"`
+		} `json:"opts"`
+	}
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/metrics":
+			_ = json.NewEncoder(w).Encode(map[string]int{"sessions": 1})
+		case "/api/sessions":
+			if r.Method != http.MethodPost {
+				t.Errorf("method = %s", r.Method)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Error(err)
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = io.WriteString(w, `{"id":"remote-session"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer daemon.Close()
+	var stdout bytes.Buffer
+	err := cli.Execute(t.Context(), []string{"run", "--workdir", "/tmp/project", "fix it"}, cli.Options{Stdout: &stdout, Stderr: io.Discard, Getenv: func(name string) string {
+		if name == "MULCH_DAEMON_URL" {
+			return daemon.URL
+		}
+		return ""
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Task != "fix it" || request.Opts.Workdir != "/tmp/project" || !strings.Contains(stdout.String(), "remote-session") {
+		t.Fatalf("request=%#v output=%q", request, stdout.String())
+	}
+}
+
+func TestRunReturnsHealthyDaemonRejectionInsteadOfFallingBack(t *testing.T) {
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/metrics" {
+			_, _ = io.WriteString(w, `{}`)
+			return
+		}
+		http.Error(w, "at capacity", http.StatusConflict)
+	}))
+	defer daemon.Close()
+	err := cli.Execute(t.Context(), []string{"run", "task"}, cli.Options{Stdout: io.Discard, Stderr: io.Discard, Getenv: func(name string) string {
+		if name == "MULCH_DAEMON_URL" {
+			return daemon.URL
+		}
+		return ""
+	}})
+	if err == nil || !strings.Contains(err.Error(), "at capacity") {
+		t.Fatalf("error = %v", err)
+	}
 }
 
 func (c *captureLLM) Stream(_ context.Context, req provider.Request, out chan<- provider.Delta) (provider.Response, error) {

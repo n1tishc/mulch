@@ -7,9 +7,12 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	"github.com/n1tishc/mulch/internal/event"
 )
 
@@ -84,6 +87,131 @@ func TestRecordedSessionReadAPIAndEmbeddedViewer(t *testing.T) {
 			t.Fatalf("metrics = %#v", got)
 		}
 	})
+}
+
+type fakeControl struct {
+	mu        sync.Mutex
+	started   StartRequest
+	steered   string
+	cancelled string
+	branched  BranchRequest
+	updates   chan event.Event
+}
+
+func (f *fakeControl) Start(_ context.Context, request StartRequest) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.started = request
+	return "live", nil
+}
+func (f *fakeControl) Steer(id, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.steered = id + ":" + text
+	return nil
+}
+func (f *fakeControl) Cancel(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cancelled = id
+	return nil
+}
+func (f *fakeControl) Branch(_ context.Context, id string, request BranchRequest) (event.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.branched = request
+	return event.Session{ID: "child", ParentID: id, ForkSeq: &request.At}, nil
+}
+func (f *fakeControl) Subscribe(ctx context.Context, _ string) (<-chan event.Event, error) {
+	out := make(chan event.Event, 1)
+	go func() {
+		defer close(out)
+		select {
+		case item := <-f.updates:
+			out <- item
+		case <-ctx.Done():
+		}
+	}()
+	return out, nil
+}
+
+func TestLiveSessionControlAPI(t *testing.T) {
+	store, err := event.Open(t.Context(), filepath.Join(t.TempDir(), "mulch.db"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	control := &fakeControl{updates: make(chan event.Event, 1)}
+	handler := New(store, control).Handler()
+
+	post := func(method, path, body string, want int, dst any) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(response, req)
+		if response.Code != want {
+			t.Fatalf("%s %s: status %d: %s", method, path, response.Code, response.Body.String())
+		}
+		if dst != nil && json.Unmarshal(response.Body.Bytes(), dst) != nil {
+			t.Fatalf("invalid response: %s", response.Body.String())
+		}
+	}
+	var started SessionResponse
+	post(http.MethodPost, "/api/sessions", `{"task":"fix it","opts":{"workdir":"/tmp/work"}}`, http.StatusAccepted, &started)
+	if started.ID != "live" || control.started.Task != "fix it" || control.started.Opts.Workdir != "/tmp/work" {
+		t.Fatalf("start = %#v / %#v", started, control.started)
+	}
+	post(http.MethodPost, "/api/sessions/live/steer", `{"text":"check tests"}`, http.StatusAccepted, nil)
+	post(http.MethodPost, "/api/sessions/live/branch", `{"at":7}`, http.StatusAccepted, nil)
+	post(http.MethodDelete, "/api/sessions/live", ``, http.StatusAccepted, nil)
+	if control.steered != "live:check tests" || control.cancelled != "live" || control.branched.At != 7 {
+		t.Fatalf("control = %#v", control)
+	}
+}
+
+func TestSessionWebSocketReplaysHistoryThenStreamsCommittedEvents(t *testing.T) {
+	store, err := event.Open(t.Context(), filepath.Join(t.TempDir(), "mulch.db"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.CreateSession(t.Context(), event.Session{ID: "live", Task: "task"}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Append(t.Context(), event.Event{SessionID: "live", Turn: 1, Type: event.TypeUserMessage, Payload: json.RawMessage(`{"text":"one"}`), Visible: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := &fakeControl{updates: make(chan event.Event, 1)}
+	httpServer := httptest.NewServer(New(store, control).Handler())
+	defer httpServer.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/sessions/live?from=1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	var replay event.Event
+	if err := wsjson.Read(ctx, conn, &replay); err != nil {
+		t.Fatal(err)
+	}
+	if replay.Seq != first.Seq {
+		t.Fatalf("replay seq = %d", replay.Seq)
+	}
+	committed, err := store.Append(t.Context(), event.Event{SessionID: "live", Turn: 1, Type: event.TypeSessionEnd, Payload: json.RawMessage(`{"status":"completed"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	control.updates <- committed
+	var live event.Event
+	if err := wsjson.Read(ctx, conn, &live); err != nil {
+		t.Fatal(err)
+	}
+	if live.Seq != first.Seq+1 || live.Type != event.TypeSessionEnd {
+		t.Fatalf("live = %#v", live)
+	}
 }
 
 func getJSON(t *testing.T, handler http.Handler, path string, dst any) {

@@ -21,6 +21,7 @@ type Options struct {
 	MaxSessions int
 	Bus         *bus.Bus
 	Run         Runner
+	Resume      Runner
 	Close       func() error
 }
 
@@ -42,6 +43,7 @@ type Manager struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	run          Runner
+	resume       Runner
 	close        func() error
 	bus          *bus.Bus
 	limit        chan struct{}
@@ -64,7 +66,7 @@ func New(opts Options) *Manager {
 		opts.Bus = bus.New()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Manager{ctx: ctx, cancel: cancel, run: opts.Run, close: opts.Close, bus: opts.Bus, limit: make(chan struct{}, opts.MaxSessions), sessions: make(map[string]*owned)}
+	return &Manager{ctx: ctx, cancel: cancel, run: opts.Run, resume: opts.Resume, close: opts.Close, bus: opts.Bus, limit: make(chan struct{}, opts.MaxSessions), sessions: make(map[string]*owned)}
 }
 
 func NewBus() *bus.Bus { return bus.New() }
@@ -74,17 +76,27 @@ func (m *Manager) Start(ctx context.Context, task string) (string, error) {
 }
 
 func (m *Manager) StartWith(ctx context.Context, task string, opts RunOpts) (string, error) {
+	id, err := event.NewSessionID()
+	if err != nil {
+		return "", err
+	}
+	return m.launch(ctx, id, task, opts, m.run)
+}
+
+func (m *Manager) ResumeWith(ctx context.Context, id, task string, opts RunOpts) (string, error) {
+	if m.resume == nil {
+		return "", errors.New("session manager cannot resume sessions")
+	}
+	return m.launch(ctx, id, task, opts, m.resume)
+}
+
+func (m *Manager) launch(ctx context.Context, id, task string, opts RunOpts, runner Runner) (string, error) {
 	select {
 	case m.limit <- struct{}{}:
 	case <-ctx.Done():
 		return "", ctx.Err()
 	case <-m.ctx.Done():
 		return "", errors.New("session manager closed")
-	}
-	id, err := event.NewSessionID()
-	if err != nil {
-		<-m.limit
-		return "", err
 	}
 	runCtx, cancel := context.WithCancel(m.ctx)
 	stopCallerCancel := context.AfterFunc(ctx, cancel)
@@ -106,7 +118,7 @@ func (m *Manager) StartWith(ctx context.Context, task string, opts RunOpts) (str
 		defer m.wg.Done()
 		defer func() { <-m.limit }()
 		defer stopCallerCancel()
-		err := m.run(runCtx, id, task, opts, entry.steering)
+		err := runner(runCtx, id, task, opts, entry.steering)
 		m.mu.Lock()
 		entry.status.Done, entry.status.Err = true, err
 		close(entry.done)

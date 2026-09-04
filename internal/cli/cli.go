@@ -1,16 +1,20 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/n1tishc/mulch/internal/agent"
@@ -100,13 +104,35 @@ func serve(ctx context.Context, args []string, opts Options) error {
 	if err := os.MkdirAll(filepath.Dir(*dbPath), 0700); err != nil {
 		return fmt.Errorf("create database directory: %w", err)
 	}
-	store, err := event.Open(context.WithoutCancel(ctx), *dbPath, nil)
+	eventBus := bus.New()
+	store, err := event.Open(context.WithoutCancel(ctx), *dbPath, eventBus)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
+	var control server.Control
+	var manager *session.Manager
+	if key := opts.Getenv("MULCH_PROVIDER_API_KEY"); key != "" {
+		model := envOr(opts.Getenv, "MULCH_MODEL", defaultModel)
+		dependencies := func(run session.RunOpts, steering *session.Steering) agent.Dependencies {
+			workdir := run.Workdir
+			if workdir == "" {
+				workdir = "."
+			}
+			return agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: tool.NewExecutor([]tool.Tool{tool.NewRead(workdir), tool.NewWrite(workdir), tool.NewEdit(workdir), tool.NewBash(workdir)}), Model: model, Workdir: workdir, ContextWindow: 200000, Hooks: []hook.Hook{steering.Bind(store)}}
+		}
+		manager = session.New(session.Options{Bus: eventBus, Run: func(runCtx context.Context, id, task string, run session.RunOpts, steering *session.Steering) error {
+			_, runErr := agent.RunSession(runCtx, dependencies(run, steering), id, task, nil)
+			return runErr
+		}, Resume: func(runCtx context.Context, id, task string, run session.RunOpts, steering *session.Steering) error {
+			_, runErr := agent.Resume(runCtx, dependencies(run, steering), id, task, nil)
+			return runErr
+		}})
+		control = server.NewControl(manager, store)
+		defer manager.Close()
+	}
 	_, _ = fmt.Fprintf(opts.Stdout, "mulch viewer listening on http://%s\n", viewerAddress(*address))
-	return server.New(store).Serve(ctx, *address)
+	return server.New(store, control).Serve(ctx, *address)
 }
 
 func viewerAddress(address string) string {
@@ -361,6 +387,16 @@ func run(ctx context.Context, args []string, opts Options) error {
 	if flags.NArg() != 1 {
 		return errors.New("mulch run requires exactly one prompt")
 	}
+	daemonEligible := !*jsonMode && *policyPath == "" && !*noIntervene && *model == envOr(opts.Getenv, "MULCH_MODEL", defaultModel) && *contextWindow == 200000 && *dbPath == envOr(opts.Getenv, "MULCH_DB", defaultDB())
+	if id, detected, daemonErr := submitToDaemon(ctx, opts, flags.Arg(0), *workdir, daemonEligible); detected {
+		if daemonErr != nil {
+			return daemonErr
+		}
+		if id != "" {
+			_, _ = fmt.Fprintf(opts.Stdout, "session %s\n", id)
+		}
+		return nil
+	}
 	key := opts.Getenv("MULCH_PROVIDER_API_KEY")
 	if key == "" {
 		return errors.New("MULCH_PROVIDER_API_KEY is required (set it in the environment or .env)")
@@ -426,6 +462,56 @@ func run(ctx context.Context, args []string, opts Options) error {
 		return errors.Join(runErr, healthOutput.err)
 	}
 	return runErr
+}
+
+func submitToDaemon(ctx context.Context, opts Options, task, workdir string, eligible bool) (string, bool, error) {
+	if !eligible {
+		return "", false, nil
+	}
+	baseURL := strings.TrimRight(envOr(opts.Getenv, "MULCH_DAEMON_URL", "http://127.0.0.1:4141"), "/")
+	probeCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
+	probe, err := http.NewRequestWithContext(probeCtx, http.MethodGet, baseURL+"/api/metrics", nil)
+	if err != nil {
+		return "", false, nil
+	}
+	response, err := http.DefaultClient.Do(probe)
+	if err != nil {
+		return "", false, nil
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "", false, nil
+	}
+	request := server.StartRequest{Task: task}
+	request.Opts.Workdir = workdir
+	body, err := json.Marshal(request)
+	if err != nil {
+		return "", false, nil
+	}
+	start, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/sessions", bytes.NewReader(body))
+	if err != nil {
+		return "", true, err
+	}
+	start.Header.Set("Content-Type", "application/json")
+	response, err = http.DefaultClient.Do(start)
+	if err != nil {
+		return "", true, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		return "", true, fmt.Errorf("daemon start: %s", strings.TrimSpace(readResponse(response.Body)))
+	}
+	var result server.SessionResponse
+	if json.NewDecoder(response.Body).Decode(&result) != nil || result.ID == "" {
+		return "", true, errors.New("daemon start returned an invalid session ID")
+	}
+	return result.ID, true, nil
+}
+
+func readResponse(reader io.Reader) string {
+	data, _ := io.ReadAll(io.LimitReader(reader, 4096))
+	return string(data)
 }
 
 func configuredPolicy(path string) (intervene.Policy, error) {
