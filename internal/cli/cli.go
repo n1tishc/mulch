@@ -21,10 +21,12 @@ import (
 const defaultModel = "glm-5.3-flash"
 
 type LLMFactory func(apiKey, baseURL string) provider.LLM
+type EmbedderFactory func(apiKey, baseURL, model string) provider.Embedder
 type Options struct {
-	Stdout, Stderr io.Writer
-	Getenv         func(string) string
-	LLMFactory     LLMFactory
+	Stdout, Stderr  io.Writer
+	Getenv          func(string) string
+	LLMFactory      LLMFactory
+	EmbedderFactory EmbedderFactory
 }
 
 func Execute(ctx context.Context, args []string, opts Options) error {
@@ -39,6 +41,9 @@ func Execute(ctx context.Context, args []string, opts Options) error {
 	}
 	if opts.LLMFactory == nil {
 		opts.LLMFactory = func(key, base string) provider.LLM { return provider.NewOpenAI(key, base) }
+	}
+	if opts.EmbedderFactory == nil {
+		opts.EmbedderFactory = func(key, base, model string) provider.Embedder { return provider.NewVoyage(key, base, model) }
 	}
 	_ = godotenv.Load()
 	if len(args) == 0 {
@@ -135,7 +140,7 @@ func continueCLI(ctx context.Context, dbPath, id, prompt string, jsonMode bool, 
 	if err != nil {
 		return err
 	}
-	scoring := score.NewRunner(store, session, []score.Scorer{score.Saturation{}, score.Staleness{}}, history...)
+	scoring := score.NewRunner(store, session, healthScorers(opts, store), history...)
 	publisher.Add(scoring)
 	emit := func(text string) { _, _ = io.WriteString(opts.Stdout, text) }
 	if jsonMode {
@@ -279,7 +284,7 @@ func run(ctx context.Context, args []string, opts Options) error {
 	}
 	defer store.Close()
 	executor := tool.NewExecutor([]tool.Tool{tool.NewRead(*workdir), tool.NewWrite(*workdir), tool.NewEdit(*workdir), tool.NewBash(*workdir)})
-	scoring := score.NewRunner(store, event.Session{ContextWindow: *contextWindow}, []score.Scorer{score.Saturation{}, score.Staleness{}})
+	scoring := score.NewRunner(store, event.Session{Task: flags.Arg(0), Model: *model, Workdir: *workdir, ContextWindow: *contextWindow}, healthScorers(opts, store))
 	publisher.Add(scoring)
 	emit := func(text string) { _, _ = io.WriteString(opts.Stdout, text) }
 	if *jsonMode {
@@ -298,6 +303,15 @@ func run(ctx context.Context, args []string, opts Options) error {
 		return errors.Join(runErr, healthOutput.err)
 	}
 	return runErr
+}
+
+func healthScorers(opts Options, cache provider.EmbeddingCache) []score.Scorer {
+	scorers := []score.Scorer{score.Saturation{}, score.Staleness{}}
+	if key := opts.Getenv("MULCH_EMBEDDING_API_KEY"); key != "" {
+		embedder := opts.EmbedderFactory(key, opts.Getenv("MULCH_EMBEDDING_BASE_URL"), envOr(opts.Getenv, "MULCH_EMBEDDING_MODEL", "voyage-4-lite"))
+		scorers = append(scorers, score.NewRelevance(embedder, cache))
+	}
+	return scorers
 }
 
 func replay(ctx context.Context, args []string, opts Options) error {

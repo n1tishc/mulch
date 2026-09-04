@@ -193,6 +193,23 @@ func TestConcurrentAppendsAreMonotonicPerSession(t *testing.T) {
 	}
 }
 
+func TestStoreCachesEmbeddingsByModelAndContentHash(t *testing.T) {
+	store := openStore(t)
+	if err := store.Save(t.Context(), "model-a", map[string][]float32{"same": {1, 2}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(t.Context(), "model-b", map[string][]float32{"same": {3, 4}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Load(t.Context(), "model-a", []string{"same", "missing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(got["same"]) != 2 || got["same"][0] != 1 || got["same"][1] != 2 {
+		t.Fatalf("cached embeddings = %#v", got)
+	}
+}
+
 func openStore(t *testing.T) *event.SQLiteStore {
 	t.Helper()
 	s, err := event.Open(t.Context(), filepath.Join(t.TempDir(), "events.db"), nil)

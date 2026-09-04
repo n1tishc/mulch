@@ -4,9 +4,12 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,22 +31,25 @@ const (
 	writeSetLabel
 	writeResumeSession
 	writeSetVisible
+	writeSaveEmbeddings
 )
 
 type writeRequest struct {
-	kind      writeKind
-	ctx       context.Context
-	session   Session
-	event     Event
-	sessionID string
-	status    Status
-	label     string
-	atSeq     int64
-	seqs      []int64
-	visible   bool
-	reason    string
-	by        string
-	reply     chan writeResult
+	kind       writeKind
+	ctx        context.Context
+	session    Session
+	event      Event
+	sessionID  string
+	status     Status
+	label      string
+	atSeq      int64
+	seqs       []int64
+	visible    bool
+	reason     string
+	by         string
+	model      string
+	embeddings map[string][]float32
+	reply      chan writeResult
 }
 type writeResult struct {
 	event   Event
@@ -227,6 +233,18 @@ func (s *SQLiteStore) executeWrite(conn *sql.Conn, req writeRequest) writeResult
 			s.publisher.Publish(marker)
 		}
 		return writeResult{}
+	case writeSaveEmbeddings:
+		tx, err := conn.BeginTx(req.ctx, nil)
+		if err != nil {
+			return writeResult{err: err}
+		}
+		defer tx.Rollback()
+		for hash, vector := range req.embeddings {
+			if _, err = tx.ExecContext(req.ctx, `INSERT INTO embeddings(model,hash,vector) VALUES(?,?,?) ON CONFLICT(model,hash) DO NOTHING`, req.model, hash, encodeVector(vector)); err != nil {
+				return writeResult{err: err}
+			}
+		}
+		return writeResult{err: tx.Commit()}
 	default:
 		return writeResult{err: errors.New("unknown event-store write")}
 	}
@@ -361,6 +379,58 @@ func (s *SQLiteStore) Visible(ctx context.Context, sessionID string) ([]Event, e
 		}
 	}
 	return result, nil
+}
+
+func (s *SQLiteStore) Load(ctx context.Context, model string, hashes []string) (map[string][]float32, error) {
+	result := map[string][]float32{}
+	const batchSize = 500
+	for start := 0; start < len(hashes); start += batchSize {
+		end := min(start+batchSize, len(hashes))
+		args := make([]any, end-start+1)
+		args[0] = model
+		for i, hash := range hashes[start:end] {
+			args[i+1] = hash
+		}
+		query := `SELECT hash,vector FROM embeddings WHERE model=? AND hash IN (` + strings.TrimSuffix(strings.Repeat("?,", end-start), ",") + `)`
+		rows, err := s.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var hash string
+			var blob []byte
+			if err := rows.Scan(&hash, &blob); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			vector, err := decodeVector(blob)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			result[hash] = vector
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+func (s *SQLiteStore) Save(ctx context.Context, model string, values map[string][]float32) error {
+	copyValues := make(map[string][]float32, len(values))
+	for hash, vector := range values {
+		copyValues[hash] = append([]float32(nil), vector...)
+	}
+	result, err := s.write(ctx, writeRequest{kind: writeSaveEmbeddings, model: model, embeddings: copyValues})
+	if err != nil {
+		return err
+	}
+	return result.err
 }
 
 func (s *SQLiteStore) EndSession(ctx context.Context, id string, status Status) error {
@@ -531,4 +601,23 @@ func nullableString(value string) any {
 		return nil
 	}
 	return value
+}
+
+func encodeVector(vector []float32) []byte {
+	result := make([]byte, len(vector)*4)
+	for i, value := range vector {
+		binary.LittleEndian.PutUint32(result[i*4:], math.Float32bits(value))
+	}
+	return result
+}
+
+func decodeVector(blob []byte) ([]float32, error) {
+	if len(blob)%4 != 0 {
+		return nil, errors.New("invalid cached embedding")
+	}
+	result := make([]float32, len(blob)/4)
+	for i := range result {
+		result[i] = math.Float32frombits(binary.LittleEndian.Uint32(blob[i*4:]))
+	}
+	return result, nil
 }

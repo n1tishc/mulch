@@ -30,3 +30,10 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id, seq);
 CREATE INDEX IF NOT EXISTS idx_events_session_type ON events(session_id, type);
+
+CREATE TABLE IF NOT EXISTS embeddings (
+  model TEXT NOT NULL,
+  hash TEXT NOT NULL,
+  vector BLOB NOT NULL,
+  PRIMARY KEY(model, hash)
+);

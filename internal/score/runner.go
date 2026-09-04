@@ -105,7 +105,7 @@ func (r *Runner) OnEvent(_ context.Context, candidate event.Event) {
 	}
 	response := r.responses[candidate.Turn]
 	r.mu.Unlock()
-	r.enqueue(scoreJob{sessionID: candidate.SessionID, turn: candidate.Turn, input: Input{Session: r.session, Events: events, Visible: visible, LastResponse: provider.Response{InputTokens: response.InputTokens, OutputTokens: response.OutputTokens, Model: response.Model}, Now: candidate.CreatedAt}})
+	r.enqueue(scoreJob{sessionID: candidate.SessionID, turn: candidate.Turn, input: Input{Session: r.session, Events: events, Visible: visible, LastResponse: provider.Response{InputTokens: response.InputTokens, OutputTokens: response.OutputTokens, Model: response.Model}, Now: candidate.CreatedAt, Turn: candidate.Turn}})
 }
 
 func (r *Runner) enqueue(job scoreJob) {

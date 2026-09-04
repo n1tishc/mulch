@@ -17,6 +17,7 @@ type Input struct {
 	Visible      []event.Event
 	LastResponse provider.Response
 	Now          time.Time
+	Turn         int
 }
 
 type Result struct {

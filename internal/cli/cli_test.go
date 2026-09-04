@@ -123,6 +123,48 @@ func TestRunStreamsAnswerAndPrintsDurableSessionID(t *testing.T) {
 	}
 }
 
+func TestRunScoresRelevanceWhenEmbeddingProviderIsConfigured(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "mulch.db")
+	var stderr bytes.Buffer
+	getenv := func(key string) string {
+		if key == "MULCH_PROVIDER_API_KEY" || key == "MULCH_EMBEDDING_API_KEY" {
+			return "test"
+		}
+		return ""
+	}
+	opts := cli.Options{
+		Stdout: &bytes.Buffer{}, Stderr: &stderr, Getenv: getenv,
+		LLMFactory:      func(string, string) provider.LLM { return commandLLM{} },
+		EmbedderFactory: func(string, string, string) provider.Embedder { return constantEmbedder{} },
+	}
+	if err := cli.Execute(t.Context(), []string{"run", "--db", db, "answer the greeting"}, opts); err != nil {
+		t.Fatal(err)
+	}
+	store, err := event.Open(context.Background(), db, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	events, err := store.List(t.Context(), sessionID(t, stderr.String()), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, recorded := range events {
+		if recorded.Type != event.TypeScoreHealth {
+			continue
+		}
+		var health event.ScoreHealth
+		if err := recorded.Decode(&health); err != nil {
+			t.Fatal(err)
+		}
+		if health.Relevance == nil || *health.Relevance != 1 {
+			t.Fatalf("relevance = %v", health.Relevance)
+		}
+		return
+	}
+	t.Fatal("missing score.health")
+}
+
 func TestRunJSONWritesOnlyCommittedEventsAsJSONLines(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "mulch.db")
 	var stdout, stderr bytes.Buffer
@@ -251,6 +293,18 @@ func contains(types []event.Type, want event.Type) bool {
 }
 
 type commandLLM struct{}
+
+type constantEmbedder struct{}
+
+func (constantEmbedder) Model() string { return "test" }
+func (constantEmbedder) MaxBatch() int { return 1000 }
+func (constantEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	vectors := make([][]float32, len(texts))
+	for i := range vectors {
+		vectors[i] = []float32{1, 0}
+	}
+	return vectors, nil
+}
 
 func (commandLLM) Stream(ctx context.Context, req provider.Request, out chan<- provider.Delta) (provider.Response, error) {
 	out <- provider.Delta{Text: "streamed "}

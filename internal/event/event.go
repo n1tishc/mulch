@@ -32,6 +32,7 @@ const (
 	TypeSessionEnd        Type = "session.end"
 	TypeContextVisibility Type = "context.visibility"
 	TypeContextInject     Type = "context.inject"
+	TypeContextCompact    Type = "context.compact"
 	TypeTurnCompleted     Type = "turn.completed"
 	TypeScoreHealth       Type = "score.health"
 	TypeScorePartial      Type = "score.partial"
@@ -154,6 +155,13 @@ type ContextInject struct {
 	Reason string `json:"reason"`
 	Text   string `json:"text"`
 	By     string `json:"by"`
+}
+type ContextCompact struct {
+	ReplacedSeqs []int64 `json:"replaced_seqs"`
+	Summary      string  `json:"summary"`
+	TokensBefore int     `json:"tokens_before"`
+	TokensAfter  int     `json:"tokens_after"`
+	By           string  `json:"by"`
 }
 type TurnCompleted struct{}
 type ScoreHealth struct {
