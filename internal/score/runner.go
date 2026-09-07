@@ -83,6 +83,9 @@ func (*Runner) Name() string                    { return "score" }
 func (r *Runner) Publish(candidate event.Event) { r.OnEvent(context.Background(), candidate) }
 
 func (r *Runner) OnEvent(_ context.Context, candidate event.Event) {
+	if r.session.ID != "" && candidate.SessionID != r.session.ID {
+		return
+	}
 	r.mu.Lock()
 	r.events = append(r.events, candidate)
 	if candidate.Type == event.TypeContextVisibility {

@@ -57,9 +57,13 @@ type Ladder struct {
 	lastApplied int
 	coherence   CoherenceRequester
 	summarizer  Summarizer
+	race        *Race
+	sessionID   string
 }
 
 func (l *Ladder) WithSummarizer(s Summarizer) *Ladder { l.summarizer = s; return l }
+func (l *Ladder) WithRace(r *Race) *Ladder            { l.race = r; return l }
+func (l *Ladder) WithSession(id string) *Ladder       { l.sessionID = id; return l }
 
 func New(store Store, policy Policy, requester ...CoherenceRequester) *Ladder {
 	d := DefaultPolicy()
@@ -108,6 +112,9 @@ func newLadder(store Store, policy Policy, requester ...CoherenceRequester) *Lad
 func (*Ladder) Name() string                    { return "intervention-ladder" }
 func (l *Ladder) Publish(candidate event.Event) { l.OnEvent(context.Background(), candidate) }
 func (l *Ladder) OnEvent(_ context.Context, candidate event.Event) {
+	if l.sessionID != "" && candidate.SessionID != l.sessionID {
+		return
+	}
 	if candidate.Type == event.TypeInterveneFire {
 		var fired event.InterveneFire
 		if candidate.Decode(&fired) == nil {
@@ -178,6 +185,23 @@ func (l *Ladder) BeforeTools(ctx context.Context, turn *hook.Turn) error {
 		}
 	}
 	action, reason := l.route(latest)
+	if l.race != nil && action != ActionWarn {
+		raced, raceErr := l.race.Compete(ctx, turn, latest)
+		if raceErr != nil {
+			return fmt.Errorf("race interventions: %w", raceErr)
+		}
+		if !raced {
+			return l.skip(ctx, turn, latest.TurnScored, "race cooldown skipped "+string(action))
+		}
+		turn.ToolCalls = nil
+		if err := l.append(ctx, turn, event.TypeInterveneFire, event.InterveneFire{Action: string(action), Reason: reason + "; selected by race", TurnScored: latest.TurnScored, AppliedBeforeTurn: turn.Turn}); err != nil {
+			return err
+		}
+		l.mu.Lock()
+		l.lastApplied = turn.Turn
+		l.mu.Unlock()
+		return nil
+	}
 	affected, applied, err := l.apply(ctx, turn, latest, action, reason)
 	if err != nil {
 		return err
@@ -378,9 +402,13 @@ func pruneCandidates(visible []event.Event, h event.ScoreHealth, share float64) 
 		var decoded []struct {
 			Seq        int64   `json:"seq"`
 			Similarity float64 `json:"similarity"`
+			Sim        float64 `json:"sim"`
 		}
 		if json.Unmarshal(encoded, &decoded) == nil {
 			for _, item := range decoded {
+				if item.Similarity == 0 {
+					item.Similarity = item.Sim
+				}
 				ranked = append(ranked, struct {
 					seq int64
 					sim float64

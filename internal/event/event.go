@@ -38,6 +38,8 @@ const (
 	TypeScorePartial      Type = "score.partial"
 	TypeInterveneFire     Type = "intervene.fire"
 	TypeInterveneSkip     Type = "intervene.skip"
+	TypeRaceStart         Type = "race.start"
+	TypeRaceEnd           Type = "race.end"
 	TypeEvalInject        Type = "eval.inject"
 )
 
@@ -49,6 +51,7 @@ const (
 	StatusFailed    Status = "failed"
 	StatusCancelled Status = "cancelled"
 	StatusEscalated Status = "escalated"
+	StatusAbandoned Status = "abandoned"
 )
 
 type Session struct {
@@ -195,6 +198,18 @@ type InterveneSkip struct {
 	Reason     string `json:"reason"`
 	TurnScored int    `json:"turn_scored,omitempty"`
 	BeforeTurn int    `json:"before_turn"`
+}
+type RaceStart struct {
+	Branches []string `json:"branches"`
+	Actions  []string `json:"actions"`
+	AtSeq    int64    `json:"at_seq"`
+	Turn     int      `json:"turn"`
+}
+type RaceEnd struct {
+	Branches []string           `json:"branches"`
+	Scores   map[string]float64 `json:"scores"`
+	Winner   string             `json:"winner"`
+	Loser    string             `json:"loser"`
 }
 type EvalInject struct {
 	Kind      string `json:"kind"`

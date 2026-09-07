@@ -394,13 +394,17 @@ func run(ctx context.Context, args []string, opts Options) error {
 	jsonMode := flags.Bool("json", false, "write committed events as JSONL")
 	policyPath := flags.String("policy", "", "intervention policy JSON file")
 	noIntervene := flags.Bool("no-intervene", false, "score health without intervening")
+	raceMode := flags.Bool("race", false, "race prune and reanchor candidates for confirmed interventions")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
 		return errors.New("mulch run requires exactly one prompt")
 	}
-	daemonEligible := !*jsonMode && *policyPath == "" && !*noIntervene && *model == envOr(opts.Getenv, "MULCH_MODEL", defaultModel) && *contextWindow == 200000 && *dbPath == envOr(opts.Getenv, "MULCH_DB", defaultDB())
+	if *raceMode && *noIntervene {
+		return errors.New("--race cannot be combined with --no-intervene")
+	}
+	daemonEligible := !*jsonMode && *policyPath == "" && !*noIntervene && !*raceMode && *model == envOr(opts.Getenv, "MULCH_MODEL", defaultModel) && *contextWindow == 200000 && *dbPath == envOr(opts.Getenv, "MULCH_DB", defaultDB())
 	if id, detected, daemonErr := submitToDaemon(ctx, opts, flags.Arg(0), *workdir, daemonEligible); detected {
 		if daemonErr != nil {
 			return daemonErr
@@ -434,27 +438,36 @@ func run(ctx context.Context, args []string, opts Options) error {
 		return err
 	}
 	defer func() { _ = store.Close() }()
-	executor := tool.NewExecutor([]tool.Tool{tool.NewRead(*workdir), tool.NewWrite(*workdir), tool.NewEdit(*workdir), tool.NewBash(*workdir)})
-	judge := opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL"))
-	coherence := score.NewCoherenceWithModel(judge, envOr(opts.Getenv, "MULCH_JUDGE_MODEL", *model))
-	scoring := score.NewRunnerWithWeights(store, event.Session{Task: flags.Arg(0), Model: *model, Workdir: *workdir, ContextWindow: *contextWindow}, healthScorers(opts, store, coherence), healthWeights(opts))
-	publisher.Add(scoring)
-	hooks := []hook.Hook{scoring}
+	policy := intervene.DefaultPolicy()
 	if !*noIntervene {
-		policy, policyErr := configuredPolicy(*policyPath)
+		var policyErr error
+		policy, policyErr = configuredPolicy(*policyPath)
 		if policyErr != nil {
 			return policyErr
 		}
-		ladder := intervene.NewConfigured(store, policy, coherence).WithSummarizer(intervene.NewLLMSummarizer(judge, envOr(opts.Getenv, "MULCH_JUDGE_MODEL", *model)))
-		publisher.Add(ladder)
-		hooks = append(hooks, ladder)
 	}
 	emit := func(text string) { _, _ = io.WriteString(opts.Stdout, text) }
 	if *jsonMode {
 		emit = func(string) {}
 	}
 	manager := session.New(session.Options{Bus: eventBus, Run: func(runCtx context.Context, id, task string, _ session.RunOpts, steering *session.Steering) error {
-		sessionHooks := append(append([]hook.Hook(nil), hooks...), steering.Bind(store))
+		judge := opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL"))
+		coherence := score.NewCoherenceWithModel(judge, envOr(opts.Getenv, "MULCH_JUDGE_MODEL", *model))
+		recorded := event.Session{ID: id, Task: task, Model: *model, Workdir: *workdir, ContextWindow: *contextWindow}
+		scoring := score.NewRunnerWithWeights(store, recorded, healthScorers(opts, store, coherence), healthWeights(opts))
+		publisher.Add(scoring)
+		sessionHooks := []hook.Hook{scoring}
+		if !*noIntervene {
+			ladder := intervene.NewConfigured(store, policy, coherence).WithSession(id).WithSummarizer(intervene.NewLLMSummarizer(judge, envOr(opts.Getenv, "MULCH_JUDGE_MODEL", *model)))
+			if *raceMode {
+				racer := intervene.NewRace(store, policy, raceCandidateRunner(store, publisher, opts, key, *model, *contextWindow))
+				ladder.WithRace(racer)
+			}
+			publisher.Add(ladder)
+			sessionHooks = append(sessionHooks, ladder)
+		}
+		sessionHooks = append(sessionHooks, steering.Bind(store))
+		executor := tool.NewExecutor([]tool.Tool{tool.NewRead(*workdir), tool.NewWrite(*workdir), tool.NewEdit(*workdir), tool.NewBash(*workdir)})
 		_, runErr := agent.RunSession(runCtx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: *model, Workdir: *workdir, ContextWindow: *contextWindow, Hooks: sessionHooks}, id, task, emit)
 		return runErr
 	}})
@@ -475,6 +488,82 @@ func run(ctx context.Context, args []string, opts Options) error {
 		return errors.Join(runErr, healthOutput.err)
 	}
 	return runErr
+}
+
+func raceCandidateRunner(store *event.SQLiteStore, publisher *fanoutPublisher, opts Options, key, model string, contextWindow int) intervene.CandidateRunner {
+	return func(ctx context.Context, child event.Session, _ intervene.Action) (event.ScoreHealth, error) {
+		isolatedWorkdir, cleanup, err := snapshotWorkdir(child.Workdir)
+		if err != nil {
+			return event.ScoreHealth{}, fmt.Errorf("snapshot race workspace: %w", err)
+		}
+		defer cleanup()
+		child.Workdir = isolatedWorkdir
+		history, err := store.List(ctx, child.ID, 1)
+		if err != nil {
+			return event.ScoreHealth{}, err
+		}
+		judge := opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL"))
+		coherence := score.NewCoherenceWithModel(judge, envOr(opts.Getenv, "MULCH_JUDGE_MODEL", model))
+		scoring := score.NewRunnerWithWeights(store, child, healthScorers(opts, store, coherence), healthWeights(opts), history...)
+		publisher.Add(scoring)
+		executor := tool.NewExecutor([]tool.Tool{tool.NewRead(child.Workdir), tool.NewWrite(child.Workdir), tool.NewEdit(child.Workdir), tool.NewBash(child.Workdir)})
+		_, runErr := agent.Resume(ctx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: model, Workdir: child.Workdir, ContextWindow: contextWindow, MaxTurns: 1, Hooks: []hook.Hook{scoring}}, child.ID, "", nil)
+		events, listErr := store.List(context.WithoutCancel(ctx), child.ID, 1)
+		var latest event.ScoreHealth
+		found := false
+		for _, candidate := range events {
+			if candidate.Type == event.TypeScoreHealth && candidate.Decode(&latest) == nil {
+				found = true
+			}
+		}
+		if !found {
+			return event.ScoreHealth{}, errors.Join(runErr, listErr, errors.New("race candidate produced no health score"))
+		}
+		// A tool-using candidate reaches the deliberate one-turn limit after its
+		// recorded tool results; a score still makes that outcome comparable.
+		return latest, listErr
+	}
+}
+
+func snapshotWorkdir(source string) (string, func(), error) {
+	root, err := os.MkdirTemp("", "mulch-race-")
+	if err != nil {
+		return "", func() {}, err
+	}
+	cleanup := func() { _ = os.RemoveAll(root) }
+	err = filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, relErr := filepath.Rel(source, path)
+		if relErr != nil {
+			return relErr
+		}
+		if entry.IsDir() && entry.Name() == ".git" && relative != "." {
+			return filepath.SkipDir
+		}
+		target := filepath.Join(root, relative)
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0755)
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return infoErr
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		contents, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		return os.WriteFile(target, contents, info.Mode().Perm())
+	})
+	if err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	return root, cleanup, nil
 }
 
 func submitToDaemon(ctx context.Context, opts Options, task, workdir string, eligible bool) (string, bool, error) {

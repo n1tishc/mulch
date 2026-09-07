@@ -217,6 +217,13 @@ func TestRunNoInterveneKeepsHealthScoringAndPolicyIsValidated(t *testing.T) {
 	}
 }
 
+func TestRunRejectsRaceWithoutInterventions(t *testing.T) {
+	err := cli.Execute(t.Context(), []string{"run", "--race", "--no-intervene", "hello"}, cli.Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Getenv: testGetenv})
+	if err == nil || !strings.Contains(err.Error(), "--race cannot be combined") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func eventTypesContain(events []event.Event, want event.Type) bool {
 	for _, candidate := range events {
 		if candidate.Type == want {

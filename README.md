@@ -75,6 +75,8 @@ The default ladder requires two confirming low-health observations, uses five po
 
 Pass `--no-intervene` to retain health scoring without ladder actions, or `--policy path.json` to supply a validated policy. Health weights use the `MULCH_HEALTH_WEIGHT_*` variables.
 
+Pass `--race` to make a confirmed Prune-or-deeper decision fork one Prune candidate and one Reanchor candidate. Each branch runs one recorded turn concurrently; the healthier context mutation is appended to the parent, the losing branch is retained as `abandoned`, and another race is suppressed for twice the normal intervention cooldown. Race mode is opt-in and cannot be combined with `--no-intervene`.
+
 ## Architecture
 
 ```text
