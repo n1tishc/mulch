@@ -34,7 +34,9 @@ func TestResumeReconstructsVisibleContextAndAppendsHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store.Close()
+	if err := store.Close(); err != nil {
+		t.Fatalf("close event store before resume: %v", err)
+	}
 
 	capture := &captureLLM{}
 	var stdout, stderr bytes.Buffer
