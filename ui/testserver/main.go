@@ -25,7 +25,14 @@ func main() {
 		panic(err)
 	}
 	defer func() { _ = os.RemoveAll(root) }()
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		panic(err)
+	}
 	db := filepath.Join(root, "fixture.db")
+	if err = os.Mkdir(filepath.Join(root, "subproject"), 0700); err != nil {
+		panic(err)
+	}
 	if err = seed(ctx, db, root); err != nil {
 		panic(err)
 	}

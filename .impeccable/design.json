@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-09-09T05:49:18.948479+00:00",
+  "generatedAt": "2026-09-09T16:24:58.852412+00:00",
   "title": "Design System: Mulch",
   "extensions": {
     "colorMeta": {
@@ -208,7 +208,7 @@
       "name": "Session navigation",
       "kind": "nav",
       "refersTo": "session-navigation",
-      "description": "Compact two-line session rows.",
+      "description": "Compact session rows within native project-directory disclosure groups, with path, conversation count, and per-folder new-chat action.",
       "html": "<nav class=\"ds-nav\" aria-label=\"Conversations\"><button aria-current=\"true\">Current conversation<small>completed</small></button><button>Another conversation<small>running</small></button></nav>",
       "css": ".ds-nav{background:var(--panel,#f0f1e9);padding:14px;}.ds-nav button{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;font-size:13px;border:1px solid transparent;border-radius:7px;padding:9px 12px;color:var(--ink,#282c24);cursor:pointer;display:flex;flex-direction:column;gap:7px;width:100%;text-align:left;font-size:12px;padding:12px 14px;background:transparent;}.ds-nav button[aria-current]{background:#e0e5d4;color:#344725;font-weight:600;}.ds-nav small{font-size:10px;color:var(--muted,#656a5c);font-weight:400;}.ds-nav button:hover{background:var(--tint,#e8eddd);}.ds-nav button:focus-visible{outline:2px solid var(--olive,#4b5e36);outline-offset:3px;}"
     },
@@ -239,7 +239,7 @@
   ],
   "narrative": {
     "northStar": "Mulch's established local workspace",
-    "overview": "Mulch inherits a warm neutral and olive identity: pale work surfaces, dark readable text, and restrained controls. The serif welcome and italic brand mark provide the established expressive detail; system sans-serif carries the operating interface.\n\nDepth comes mainly from surface tones and fine borders. Components remain compact, with open reading space around conversation text. This records the implemented workspace, without introducing a new metaphor, rebrand, or imagery.",
+    "overview": "Mulch inherits a warm neutral and olive identity: pale work surfaces, dark readable text, and restrained controls. The serif welcome and italic brand mark provide the established expressive detail; system sans-serif carries the operating interface.\n\nDepth comes mainly from surface tones and fine borders. Components remain compact, with open reading space around conversation text. This records the implemented workspace, without introducing a new metaphor, rebrand, or imagery. Directory disclosures organize saved conversations; the default inspector uses a compact execution tree with linked evidence. Confirmed history deletion uses the existing modal and danger treatments.",
     "keyCharacteristics": [
       "Warm neutral surfaces with one olive action accent.",
       "System interface text, serif welcome, monospace evidence.",

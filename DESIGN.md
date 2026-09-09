@@ -165,7 +165,15 @@ Fields use paper, a fine border, and the control radius. The white composer has 
 
 ### Navigation
 
-Session rows pair a truncated title with supporting metadata. The active row deepens the pale olive fill and strengthens its title weight. Evidence tabs use a tinted selected background, olive text, and aria-selected. Modal session and inspector drawers use native dialog behavior, Escape dismissal, labelled close controls, and focus return.
+Project directories form native disclosure groups with a folder name, full path, conversation count, and “New chat here” action. The sidebar’s add control opens a labelled directory-path dialog. Session rows pair a truncated title with supporting metadata. The active row deepens the pale olive fill and strengthens its title weight. Evidence tabs use a tinted selected background, olive text, and aria-selected. Modal session and inspector drawers use native dialog behavior, Escape dismissal, labelled close controls, and focus return.
+
+### Execution trace
+
+The inspector defaults to a turn tree: native disclosures, fine connecting rules, compact event buttons, and muted monospace sequence IDs. The latest turn starts expanded. Tools nest under recorded activity; score, context, repair, and candidate links expose evidence. Long histories reveal earlier turns and additional steps incrementally. Grouping does not imply causal order across asynchronous scorers or expose private model reasoning.
+
+### History deletion
+
+An explicit confirmation dialog names the conversation and candidate branches being removed from saved history. “Keep conversation” is secondary; “Delete permanently” uses the established danger treatment. Project files remain on disk.
 
 ### Repair evidence
 
@@ -185,4 +193,4 @@ A square bordered notice links conversation context to inspectable evidence. The
 - **Don't** present missing evidence as a numeric zero.
 - **Don't** turn context health or candidate selection into a correctness grade.
 
-Sources: [workspace styles](ui/src/workspace.css), [responsive styles](ui/src/workspace-responsive.css), and [components](ui/src/components/). Recorded after the final implementation review on 2026-09-08. Product constraints remain in [PRODUCT.md](PRODUCT.md).
+Sources: [workspace styles](ui/src/workspace.css), [responsive styles](ui/src/workspace-responsive.css), and [components](ui/src/components/). Refreshed after the local browser extension review on 2026-09-09. Terminal layout is documented in the surface brief; browser tokens do not prescribe terminal colors. Product constraints remain in [PRODUCT.md](PRODUCT.md).

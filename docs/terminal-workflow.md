@@ -53,6 +53,7 @@ Type `/` to browse commands, or type a prefix to filter. Terminal history is loc
 | `/history` | Show recorded user/assistant messages |
 | `/diff` | Show tracked changes relative to Git HEAD and untracked names; requires an initial commit |
 | `/inspect` | Open the current session in a read-only browser; terminal retains control, and exiting the terminal closes this viewer |
+| `/web` | Open the live execution tree in the browser; alias for `/inspect`, also available mid-task |
 | `/cancel` | Cancel a running task in the terminal interface |
 | `/exit` or `/quit` | Leave, cancelling current work first if necessary |
 
@@ -81,3 +82,11 @@ This interface does not yet include provider OAuth, selectable approval policies
 The design draws on documented interactive workflows: Codex's local session/status commands, Claude Code's editor and history controls, OpenCode's TUI command flow, and Pi's terminal session approach. These references inform the interaction pattern; Mulch is not a feature-compatible replacement for all four tools. Sources checked 2026-09-08: [Codex commands](https://developers.openai.com/codex/cli/slash-commands/), [Claude Code interactive mode](https://code.claude.com/docs/en/interactive-mode), [OpenCode TUI](https://opencode.ai/docs/tui/), [Pi documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md).
 
 The terminal implementation uses pinned Bubble Tea and Lip Gloss dependencies. Deterministic tests cover editor/paste behavior, command dispatch, saved-session continuity, model changes, and cancellation; those checks do not establish a live-model correctness advantage.
+
+## Browser trace and saved setup
+
+`/web` aliases `/inspect` and works during a task. `/web --no-open` prints the URL. The browser opens the recorded execution tree for this conversation; the terminal retains execution control. Exiting the terminal closes its attached viewer.
+
+Run `mulch config` before launching to see setup commands. Save `base-url` and `model` with `mulch config set KEY VALUE`; save the key with `mulch config set api-key` (hidden prompt). `mulch config show` redacts secrets. Restart the interface after configuration changes.
+
+The terminal uses a compact header, bounded reading width, a separate prompt and status area, and scroll anchoring while reading older output. The cursor highlights the existing character instead of inserting a visual space into the prompt. Use PgUp/PgDn for history, Alt+Enter for multiline input, and `/web` for the detailed execution tree.

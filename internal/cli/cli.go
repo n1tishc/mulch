@@ -59,7 +59,7 @@ func Execute(ctx context.Context, args []string, opts Options) error {
 		opts.Getenv = os.Getenv
 	}
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
-		_, err := fmt.Fprintln(opts.Stdout, "Mulch — terminal coding agent and context-repair harness\n\n  mulch [chat flags]       Open the interactive terminal\n  mulch chat --help        Show interactive launch options\n  mulch run PROMPT         Execute a single task\n  mulch web                Open the local coding workspace\n  mulch serve              Start the browser server\n  mulch sessions           List saved sessions\n  mulch resume ID PROMPT   Continue a saved task once\n  mulch replay ID          Replay a saved trace\n  mulch branch ID --at N   Branch a session\n  mulch eval SCENARIO      Run correctness evaluation\n  mulch version           Show version\n\nInside the terminal: type / to browse commands or /help for controls.")
+		_, err := fmt.Fprintln(opts.Stdout, "Mulch — terminal coding agent and context-repair harness\n\n  mulch [chat flags]       Open the interactive terminal\n  mulch chat --help        Show interactive launch options\n  mulch run PROMPT         Execute a single task\n  mulch web                Open the local coding workspace\n  mulch serve              Start the browser server\n  mulch sessions           List saved sessions\n  mulch resume ID PROMPT   Continue a saved task once\n  mulch replay ID          Replay a saved trace\n  mulch branch ID --at N   Branch a session\n  mulch eval SCENARIO      Run correctness evaluation\n  mulch config            Configure provider and model\n  mulch version           Show version\n\nInside the terminal: type / to browse commands or /help for controls.")
 		return err
 	}
 	if len(args) == 1 && args[0] == "version" {
@@ -77,6 +77,14 @@ func Execute(ctx context.Context, args []string, opts Options) error {
 		opts.EmbedderFactory = func(key, base, model string) provider.Embedder { return provider.NewVoyage(key, base, model) }
 	}
 	_ = godotenv.Load()
+	if len(args) > 0 && args[0] == "config" {
+		return configure(args[1:], opts)
+	}
+	var configErr error
+	opts.Getenv, configErr = configuredEnvironment(opts.Getenv)
+	if configErr != nil {
+		return configErr
+	}
 	if len(args) == 0 {
 		return chat(ctx, nil, opts)
 	}
@@ -158,6 +166,10 @@ func serveMode(ctx context.Context, args []string, opts Options, web bool) error
 	if !info.IsDir() {
 		return errors.New("workspace must be a directory")
 	}
+	workspace, err = filepath.EvalSymlinks(workspace)
+	if err != nil {
+		return err
+	}
 	if *raceMode && *noIntervene {
 		return errors.New("--race cannot be combined with --no-intervene")
 	}
@@ -231,7 +243,7 @@ func serveMode(ctx context.Context, args []string, opts Options, web bool) error
 			_, _ = fmt.Fprintf(opts.Stderr, "Open the URL above in your browser (%v).\n", err)
 		}
 	}
-	return server.New(store, control).WithConfig(server.Config{Workspace: workspace, Model: envOr(opts.Getenv, "MULCH_MODEL", defaultModel), Mode: string(mode), Policy: policy, Ready: control != nil}).ServeListener(ctx, listener)
+	return server.New(store, control).WithConfig(server.Config{Workspace: workspace, Model: envOr(opts.Getenv, "MULCH_MODEL", defaultModel), Mode: string(mode), Policy: policy, Ready: control != nil, Manage: true}).ServeListener(ctx, listener)
 }
 
 func viewerAddress(address string) string {

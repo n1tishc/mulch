@@ -19,6 +19,7 @@ type Config struct {
 	Mode           string `json:"mode"`
 	Policy         any    `json:"policy"`
 	Ready          bool   `json:"ready"`
+	Manage         bool   `json:"can_manage"`
 	ReadOnlyReason string `json:"read_only_reason,omitempty"`
 }
 
@@ -47,7 +48,7 @@ func (s *Server) sessionDetail(w http.ResponseWriter, r *http.Request) {
 	if owned {
 		owner = "daemon"
 	}
-	writeJSON(w, map[string]any{"session": saved, "owner": owner, "can_resume": s.control != nil && !running, "can_stop": owned, "can_steer": owned, "can_rename": s.control != nil && !running}, nil)
+	writeJSON(w, map[string]any{"session": saved, "owner": owner, "can_resume": s.control != nil && !running, "can_stop": owned, "can_steer": owned, "can_rename": s.control != nil && !running, "can_delete": s.config.Manage && !running}, nil)
 }
 
 func (s *Server) resume(w http.ResponseWriter, r *http.Request) {

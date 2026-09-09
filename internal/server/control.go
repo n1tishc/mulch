@@ -39,6 +39,10 @@ func (c *ManagerControl) Start(ctx context.Context, request StartRequest) (strin
 	if !info.IsDir() {
 		return "", errors.New("workspace must be a directory")
 	}
+	wd, err = filepath.EvalSymlinks(wd)
+	if err != nil {
+		return "", err
+	}
 	request.Opts.Workdir = wd
 	return c.manager.StartWith(context.WithoutCancel(ctx), request.Task, session.RunOpts{Workdir: request.Opts.Workdir})
 }

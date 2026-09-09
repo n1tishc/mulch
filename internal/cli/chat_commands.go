@@ -29,6 +29,7 @@ var chatCommands = []struct{ name, description string }{
 	{"/history", "Show saved user and assistant messages"},
 	{"/diff", "Show tracked Git changes and untracked file names"},
 	{"/inspect", "Open this session in the browser; terminal retains control"},
+	{"/web", "Open the live browser trace for this conversation"},
 	{"/cancel", "Cancel the running task (terminal interface)"},
 	{"/exit", "Exit the application"},
 }
@@ -62,7 +63,10 @@ func (c *chatControl) command(ctx context.Context, input string) (string, bool, 
 	name, arg, _ := strings.Cut(strings.TrimSpace(input), " ")
 	arg = strings.TrimSpace(arg)
 	switch name {
-	case "/inspect":
+	case "/inspect", "/web":
+		if arg != "" && arg != "--no-open" {
+			return "", false, errors.New("usage: /web [--no-open]")
+		}
 		return c.inspect(ctx, arg == "--no-open")
 	case "/exit", "/quit":
 		return "", true, nil
@@ -210,7 +214,7 @@ func (c *chatControl) inspect(ctx context.Context, noOpen bool) (string, bool, e
 		viewer := server.New(c.store).WithConfig(server.Config{Workspace: c.recorded.Workdir, Model: c.recorded.Model, Mode: string(c.config.Mode), ReadOnlyReason: "Terminal inspection: send messages and control tasks in the terminal. This viewer closes when the terminal exits."})
 		go func() { c.inspectorDone <- viewer.ServeListener(serveCtx, listener) }()
 	}
-	address := c.inspectorURL + "?session=" + url.QueryEscape(c.recorded.ID)
+	address := c.inspectorURL + "?session=" + url.QueryEscape(c.recorded.ID) + "&view=trace"
 	message := "Inspect this session: " + address + "\nTerminal retains execution control.\n"
 	if !noOpen {
 		if err := openBrowser(address); err != nil {

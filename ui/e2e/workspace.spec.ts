@@ -30,7 +30,7 @@ test("lost response retry preserves submission identity and draft",async({page,r
 
 test("repair occurrences, policy, candidate ties and ungraded outcome",async({page})=>{
   await page.goto("/?session=evidence");await page.getByRole("button",{name:"Inspect",exact:true}).click();
-  await expect(page.locator(".dimension").filter({hasText:"coherence"})).toContainText("40.0 · reused");await expect(page.locator(".facts")).toContainText("80");await expect(page.locator(".dimension").filter({hasText:"staleness"}).locator("meter")).toHaveCount(0);
+  await page.getByRole("tab",{name:"health",exact:true}).click();await expect(page.locator(".dimension").filter({hasText:"coherence"})).toContainText("40.0 · reused");await expect(page.locator(".facts")).toContainText("80");await expect(page.locator(".dimension").filter({hasText:"staleness"}).locator("meter")).toHaveCount(0);
   await page.getByRole("tab",{name:"repairs",exact:true}).click();await page.locator(".decision").filter({hasText:"Synthetic confirmed low relevance"}).click();await expect(page.getByText("#4 · visible → hidden",{exact:true})).toBeVisible();await expect(page.getByRole("region",{name:"Selected repair evidence"})).toBeFocused();
   await page.locator(".selected-evidence summary").click();await expect(page.locator(".selected-evidence pre")).toContainText("Identical payload");
   await page.locator(".decision").filter({hasText:"race.end"}).click();await expect(page.locator(".candidate")).toHaveCount(2);await expect(page.locator(".candidate").first()).toContainText("Selected");await expect(page.getByText("Not independently graded",{exact:true})).toBeVisible();
@@ -62,4 +62,36 @@ test("provider failure recovers and Markdown cannot execute HTML",async({page})=
 test("closing the browser leaves backend work running",async({page,request})=>{
   await page.goto("/");await page.getByLabel("Message",{exact:true}).fill("slow task survives browser closure");await page.getByRole("button",{name:"Send message"}).click();await expect(page.getByRole("button",{name:"Stop task"})).toBeEnabled();const id=new URL(page.url()).searchParams.get("session")!;
   await page.close();const state=await(await request.get(`/api/sessions/${id}`)).json();expect(state.owner).toBe("daemon");expect(state.session.Status).toBe("running");await request.delete(`/api/sessions/${id}`);await expect.poll(async()=>{const d=await(await request.get(`/api/sessions/${id}`)).json();return d.session.Status;}).toBe("cancelled");
+});
+
+test("workspace folders persist, trace links work, and deletion keeps project files",async({page,request})=>{
+  await page.goto("/");
+  const config=await(await request.get("/api/config")).json();
+  await page.getByRole("button",{name:"Add workspace",exact:true}).click();
+  await page.getByLabel("Directory path").fill(`${config.workspace}/subproject`);
+  await page.getByRole("button",{name:"Add directory",exact:true}).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);await page.reload();
+  await expect(page.locator(".workspace-group")).toHaveCount(2);await page.locator(".workspace-group").filter({has:page.locator("summary span",{hasText:/^subproject$/})}).getByRole("button",{name:"New chat here"}).click();await expect(page.getByLabel("Working directory")).toHaveValue(`${config.workspace}/subproject`);
+  await page.getByLabel("Message",{exact:true}).fill("Disposable deletion fixture");await page.getByRole("button",{name:"Send message"}).click();
+  await expect(page.locator(".task-end")).toContainText("completed");
+  const id=new URL(page.url()).searchParams.get("session")!;
+  await page.getByRole("button",{name:"Inspect",exact:true}).click();await expect(page.getByRole("heading",{name:"Execution trace",exact:true})).toBeVisible();
+  for(const turn of await page.locator(".trace-turn").all())await turn.evaluate(el=>el.setAttribute("open",""));
+  await expect(page.getByRole("button",{name:/Tool · write/})).toBeVisible();
+  await expect(page.getByRole("button",{name:"Delete chat",exact:true})).toBeVisible();await page.screenshot({path:"test-results/desktop-trace.png",fullPage:true});
+  await page.getByRole("button",{name:/Tool · write/}).click();await expect(page.getByRole("heading",{name:"Raw evidence"})).toBeVisible();
+  await page.getByRole("button",{name:"Delete chat",exact:true}).click();await page.getByRole("button",{name:"Keep conversation"}).click();
+  await expect(page.locator(".task-end")).toContainText("completed");
+  await page.getByRole("button",{name:"Delete chat",exact:true}).click();await page.getByRole("button",{name:"Delete permanently"}).click();
+  await expect(page.getByRole("heading",{name:"What are we working on?"})).toBeVisible();
+  const sessions=await(await request.get("/api/sessions")).json();expect(sessions.some((s:{ID:string})=>s.ID===id)).toBe(false);
+  expect((await request.delete("/api/sessions/external/history")).status()).toBe(409);
+  await page.goto("/?session=evidence&view=trace");
+  await expect(page.getByRole("heading",{name:"Execution trace",exact:true})).toBeVisible();
+  for(const turn of await page.locator(".trace-turn").all())await turn.evaluate(el=>el.setAttribute("open",""));
+  await expect(page.getByRole("button",{name:/Supporting score/}).first()).toBeVisible();
+  await page.getByRole("button",{name:/Supporting score/}).first().click();await expect(page.getByRole("tab",{name:"health",exact:true})).toHaveAttribute("aria-selected","true");
+  await page.setViewportSize({width:390,height:844});await page.getByRole("tab",{name:"trace",exact:true}).click();
+  await page.screenshot({path:"test-results/mobile-trace.png",fullPage:true});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
 });

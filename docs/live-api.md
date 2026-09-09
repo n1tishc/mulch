@@ -26,3 +26,12 @@ Add `&follow=1` to keep following after session end and observe later tasks in t
 `mulch run` probes `MULCH_DAEMON_URL` (default `http://127.0.0.1:4141`). It submits the task to a healthy daemon and prints the session ID; when no healthy daemon is present, it retains the standalone behavior.
 
 Dashboard-started and resumed sessions use the shared health-scoring and intervention runtime. `mulch serve --race` enables candidate repair comparison; `--no-intervene` retains scoring only; `--policy path.json` selects a policy. These are server-wide settings. The default enables the intervention ladder.
+
+### Workspace organization and history deletion
+
+- `GET /api/workspaces`: remembered and session-derived directory paths.
+- `POST /api/workspaces {"path":"/absolute/project"}`: validate and remember an existing directory; returns its resolved path.
+- `DELETE /api/sessions/{id}/history`: permanently delete a stopped conversation and all descendant branches/events. Returns `{"deleted":true}`; rejects any running or leased descendant with 409. Leaves project files untouched. Existing `DELETE /api/sessions/{id}` still means cancel, for compatibility.
+- `/api/config.can_manage` controls workspace and history mutations independently of provider readiness. Attached terminal viewers have it disabled. Session details expose `can_delete`; the deletion transaction also checks descendants.
+
+Deleted IDs remain tombstoned, and durable request receipts are retained so retries cannot execute deleted work again. Workspace changes and deletions use the same-origin mutation protections.

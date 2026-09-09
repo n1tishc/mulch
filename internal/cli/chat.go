@@ -45,7 +45,7 @@ func chat(ctx context.Context, args []string, opts Options) error {
 	}
 	key := opts.Getenv("MULCH_PROVIDER_API_KEY")
 	if key == "" {
-		return errors.New("MULCH_PROVIDER_API_KEY is required (set it in the environment or .env)")
+		return errors.New("provider API key is required; run mulch config set api-key (or set MULCH_PROVIDER_API_KEY)")
 	}
 	policy, err := configuredPolicy(*policyPath)
 	if err != nil {
@@ -87,6 +87,11 @@ func chat(ctx context.Context, args []string, opts Options) error {
 		if !info.IsDir() {
 			return errors.New("--workdir must be a directory")
 		}
+		wd, err = filepath.EvalSymlinks(wd)
+		if err != nil {
+			return err
+		}
+		recorded.Workdir = wd
 		recorded.ID, err = event.NewSessionID()
 		if err != nil {
 			return err

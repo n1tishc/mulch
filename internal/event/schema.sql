@@ -49,3 +49,5 @@ CREATE TABLE IF NOT EXISTS execution_leases (
   session_id TEXT PRIMARY KEY,
   owner TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS deleted_sessions (session_id TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS workspaces (path TEXT PRIMARY KEY);

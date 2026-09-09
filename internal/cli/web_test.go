@@ -42,7 +42,7 @@ func TestInspectHandoffKeepsTerminalOwnership(t *testing.T) {
 		t.Fatal(d)
 	}
 	previous := c.inspectorURL
-	if _, _, err = c.command(t.Context(), "/inspect --no-open"); err != nil || previous != c.inspectorURL {
+	if _, _, err = c.command(t.Context(), "/web --no-open"); err != nil || previous != c.inspectorURL {
 		t.Fatal("inspector not reused", err)
 	}
 }

@@ -34,6 +34,8 @@ const (
 	writeSaveEmbeddings
 	writeWebRequest
 	writeLease
+	writeDeleteSession
+	writeWorkspace
 )
 
 type writeRequest struct {
@@ -141,6 +143,11 @@ func (s *SQLiteStore) writeLoop(ctx context.Context) {
 
 func (s *SQLiteStore) executeWrite(conn *sql.Conn, req writeRequest) writeResult {
 	switch req.kind {
+	case writeDeleteSession:
+		return writeResult{err: deleteConversation(conn, req.ctx, req.sessionID)}
+	case writeWorkspace:
+		_, err := conn.ExecContext(req.ctx, `INSERT OR IGNORE INTO workspaces(path) VALUES(?)`, req.label)
+		return writeResult{err: err}
 	case writeWebRequest:
 		if req.by == "finish" {
 			_, err := conn.ExecContext(req.ctx, `UPDATE web_requests SET response=?,error=? WHERE request_id=?`, req.reason, req.label, req.model)
@@ -166,7 +173,14 @@ func (s *SQLiteStore) executeWrite(conn *sql.Conn, req writeRequest) writeResult
 			_, err := conn.ExecContext(req.ctx, `DELETE FROM execution_leases WHERE session_id=? AND owner=?`, req.sessionID, req.label)
 			return writeResult{err: err}
 		}
-		_, err := conn.ExecContext(req.ctx, `INSERT INTO execution_leases(session_id,owner) VALUES(?,?)`, req.sessionID, req.label)
+		result, err := conn.ExecContext(req.ctx, `INSERT INTO execution_leases(session_id,owner) SELECT ?,? WHERE NOT EXISTS(SELECT 1 FROM deleted_sessions WHERE session_id=?)`, req.sessionID, req.label, req.sessionID)
+		if err == nil {
+			var n int64
+			n, err = result.RowsAffected()
+			if err == nil && n == 0 {
+				err = errors.New("session was deleted")
+			}
+		}
 		if err != nil {
 			return writeResult{err: fmt.Errorf("session execution is already owned or cannot be claimed: %w", err)}
 		}

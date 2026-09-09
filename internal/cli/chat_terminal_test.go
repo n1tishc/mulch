@@ -10,10 +10,34 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/n1tishc/mulch/internal/event"
 	"github.com/n1tishc/mulch/internal/provider"
 	harness "github.com/n1tishc/mulch/internal/runtime"
 )
+
+func TestTerminalLayoutCursorAndStreamingScroll(t *testing.T) {
+	for _, size := range [][2]int{{40, 12}, {80, 24}, {140, 40}} {
+		m := &terminalChat{width: size[0], height: size[1], control: &chatControl{recorded: &event.Session{Model: "test", Workdir: "/workspace/project"}, config: &harness.Config{Mode: harness.Plain}}, input: []rune("hello"), cursor: 2, transcript: strings.Repeat("line\n", 50)}
+		view := ansi.Strip(m.View())
+		if !strings.Contains(view, "hello") {
+			t.Fatal("cursor inserted a spurious space", view)
+		}
+		if strings.Count(view, "\n")+1 > size[1] {
+			t.Fatalf("height overflow at %v", size)
+		}
+		for _, line := range strings.Split(view, "\n") {
+			if ansi.StringWidth(line) > size[0] {
+				t.Fatalf("width overflow at %v", size)
+			}
+		}
+		m.scroll = 5
+		m.append("new streamed line\n")
+		if m.scroll != 6 {
+			t.Fatal("reading position moved during streaming")
+		}
+	}
+}
 
 func TestTerminalEditorPasteUnicodeAndMultiline(t *testing.T) {
 	m := &terminalChat{}
@@ -62,6 +86,11 @@ func TestTerminalCancelClearsQueuedFollowups(t *testing.T) {
 	}
 	if !strings.Contains(m.transcript, "Cancelling") {
 		t.Fatal("missing feedback")
+	}
+	m.queued = []string{"queued after stop"}
+	m.submit("/cancel")
+	if len(m.queued) != 0 {
+		t.Fatal("slash cancel left queued work")
 	}
 }
 

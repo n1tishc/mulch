@@ -15,9 +15,9 @@ Then, with the binary on PATH:
 
 ```sh
 cd /path/to/project
-export MULCH_PROVIDER_API_KEY=your-key
-export MULCH_PROVIDER_BASE_URL=https://opencode.ai/zen/go/v1
-export MULCH_MODEL=glm-5.3-flash
+mulch config set base-url https://opencode.ai/zen/go/v1
+mulch config set model glm-5.3-flash
+mulch config set api-key
 mulch web
 ```
 
@@ -51,7 +51,7 @@ Closing/reloading the browser does not cancel the daemon's task. Stop it in the 
 Inside an existing terminal session:
 
 ```text
-/inspect
+/web
 ```
 
 This opens the same saved session in a read-only inspector. The terminal keeps ownership; the inspection server shuts down when the terminal exits. `/inspect --no-open` prints the URL. It is available during a running terminal task once its session has been recorded. A separately launched web server sharing the database can also observe terminal events; external active sessions have disabled stop/steer/resume controls.
@@ -100,3 +100,17 @@ The initial full Go run hit an existing two-second process-cancellation timing l
 ## Before wider use
 
 Try the UI in a disposable clone with your configured model and inspect both edits and trace evidence. Live provider compatibility, long-running streams, network failures across daemon restarts, assistive-technology testing, and comparative correctness still deserve broader testing. Follow the [stress-testing protocol](stress-testing.html) before publication. This interface makes repair behavior inspectable; the [pilot results](correctness-pilot-results.html) still do not establish a correctness advantage.
+
+## Workspace folders, deletion, and execution trace
+
+Use **+** beside Workspaces to add an existing absolute directory. The server validates and remembers it in SQLite; chats are grouped by their actual working directory. **New chat here** selects that folder without moving files or changing an existing session's directory.
+
+**Delete chat** opens a confirmation. Deletion removes the selected conversation, its descendant candidate sessions, and their events. Any running task or execution lease in the subtree blocks deletion. Project files are untouched. Request receipts and deleted-session IDs remain to prevent retries from silently re-executing deleted work. This is history deletion, not secure erasure of database backups. Terminal-attached read-only views cannot delete history or add workspaces.
+
+**Inspect → Trace** is the default evidence view. Expand recorded turns to follow model requests, tool calls and results, scoring, context mutations, repairs, and candidate branches. Exact repair-to-score and repair-to-context links remain clickable. Asynchronous score arrival is grouped by the event's recorded turn, with the scored turn labeled separately. Stream deltas are summarized as counts; long traces reveal earlier turns and steps incrementally. No private model reasoning or unrecorded causal links are fabricated.
+
+From a terminal conversation, `/web` (or `/web --no-open`) opens this trace mid-task. It aliases `/inspect`: execution stays in the terminal and the attached viewer closes when the terminal exits. For an independently running browser workspace, use `mulch web`.
+
+## Saved provider settings
+
+Run `mulch config` for setup commands. Use `mulch config set api-key` for a hidden prompt, `mulch config set base-url URL`, and `mulch config set model NAME`. `mulch config show` redacts keys. Settings are saved in `~/.config/mulch/config.json`, with `XDG_CONFIG_HOME` and `MULCH_CONFIG` overrides. Environment and `.env` values override the saved file. Restart the process to apply changes.

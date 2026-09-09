@@ -8,6 +8,9 @@ Mulch is a small Go coding harness that records durable sessions, scores working
 
 Recent implementation work includes:
 
+- **Workspace organization and live traces:** `/web` opens the current terminal conversation in a read-only browser trace. Browser folders group chats by project directory, support adding directories, and allow confirmed deletion of stopped chats and their candidate branches without deleting project files. The execution tree links recorded turns, tools, scores, repairs, and race candidates.
+- **Saved provider setup:** `mulch config` stores provider settings locally, prompts for API keys without putting them in shell history, and redacts secrets when showing configuration.
+- **Terminal refinements:** a compact header and bounded transcript, corrected cursor rendering, stable scrolling during streamed output, and cancellation that clears queued follow-ups.
 - **Browser coding workspace:** `mulch web` opens a conversation interface in the launch directory, with streamed Markdown, tool output, saved drafts, same-session follow-ups, stop/steer controls, session rename, commands, and mobile drawers. Reconnects backfill committed events; repeated submissions reuse a durable request identity.
 - **Inspectable evidence:** recorded run configuration, correctly scaled score dimensions, freshness and failure categories, exact repair-to-score/context links, historical request visibility, and candidate comparisons. Ordinary tasks remain explicitly **not independently graded**. Terminal `/inspect` opens the same saved conversation as a read-only browser view.
 - **Shared execution:** standalone runs, dashboard sessions, and evaluations use the same runtime for scoring and repair; dashboard session start/resume now attaches those hooks.
@@ -72,16 +75,19 @@ Use `/help`, `/new`, `/sessions`, `/resume ID`, `/status`, `/model NAME`, `/mode
 
 Reopen a conversation with `./dist/mulch --resume SESSION_ID`. It uses the saved model and working directory. Chat supports `--db`, `--policy`, `--no-intervene`, and `--race`; choose the same repair flags when reopening. It runs locally through the shared runtime, independently of daemon submission. Each task retains the runtime's turn limit; idle chat makes no model calls. The existing `run` command remains available for single-task execution. Redirected input/output or `TERM=dumb` uses the simpler line interface.
 
-Mulch uses provider-neutral configuration. OpenCode Go is the default endpoint/model pair, but any OpenAI-compatible chat endpoint can be selected:
+Save provider configuration once, then launch either interface from any project directory:
 
 ```sh
-export MULCH_PROVIDER_API_KEY=your-key
-export MULCH_PROVIDER_BASE_URL=https://opencode.ai/zen/go/v1
-export MULCH_MODEL=glm-5.3-flash
-./mulch run "inspect this repository and explain its architecture"
+mulch config set base-url https://opencode.ai/zen/go/v1
+mulch config set model glm-5.3-flash
+mulch config set api-key  # hidden prompt
+mulch config show         # secrets redacted
+
+cd /path/to/project
+mulch                    # or: mulch web
 ```
 
-Environment variables can also live in `.env`. Relevance scoring is enabled separately with `MULCH_EMBEDDING_API_KEY`; its base URL and model are configurable through `MULCH_EMBEDDING_BASE_URL` and `MULCH_EMBEDDING_MODEL`. This split allows the chat and embedding providers to differ. See [the provider spike](docs/provider-spike.md) for the adapter decision and live verification command.
+Settings live in `~/.config/mulch/config.json` (`XDG_CONFIG_HOME` or `MULCH_CONFIG` can override the location). `mulch config path` prints the path; `mulch config unset KEY` removes a value. The JSON keys are `api-key`, `base-url`, `model`, `judge-model`, `embedding-api-key`, `embedding-base-url`, and `embedding-model`. The file is stored with owner-only permissions on Unix; keys are local plaintext, not encrypted. For automation, pipe a key to `mulch config set api-key --stdin`. Restart Mulch after changes. Environment variables and `.env` override saved values; explicit launch flags take precedence. Relevance scoring remains optional and uses separate embedding credentials. See [the provider spike](docs/provider-spike.md).
 
 Open the browser workspace from the project you want Mulch to work on:
 
@@ -104,9 +110,7 @@ Use a disposable project copy: Mulch can edit files and execute commands. Live p
 
 ```sh
 cd /path/to/test-project
-export MULCH_PROVIDER_API_KEY=your-key
-export MULCH_PROVIDER_BASE_URL=https://opencode.ai/zen/go/v1
-export MULCH_MODEL=glm-5.3-flash
+# Run `mulch config` once to save your provider settings.
 
 mulch       # Interactive CLI
 # Or, in the same configured shell:
@@ -123,9 +127,11 @@ Run these checks in both interfaces:
 | Exit and reopen a saved session | CLI `/sessions` then `/resume ID`, or Web session selection, restores history and supports follow-ups. |
 | Launch separately with invalid credentials | A clear failure appears, no false success is reported, and the interface stays usable. |
 
-**CLI:** check `/help`, `/status`, `/diff`, and `/new`. `/inspect` opens the current session read-only in the browser.
+**CLI:** check `/help`, `/status`, `/diff`, and `/new`. `/web` (alias `/inspect`) opens the current session's trace read-only in the browser, including during a running task. Keep the terminal open.
 
-**Web:** refresh during a running task and check for duplicate messages or execution. Test **Steer next turn**, rename, saved drafts, and Cmd/Ctrl+K commands. Closing the tab leaves execution running.
+**Web:** refresh during a running task and check for duplicate messages or execution. Test **Steer next turn**, rename, saved drafts, and Cmd/Ctrl+K commands. Add a workspace with the sidebar **+**, then use **New chat here**. **Delete chat** asks for confirmation and removes saved history and candidate branches; running branches block deletion. Project files stay on disk. Closing the tab leaves execution running.
+
+**Trace:** open **Inspect → Trace**, expand a turn, and select a model call, tool result, score, or repair. Supporting-score and context-change links use exact recorded sequence IDs. Candidate links open branch sessions. Stream chunks are counted rather than rendered as thousands of nodes. No model reasoning is invented, and missing evidence stays unknown.
 
 **Repair evidence:** use a longer task and inspect Health, Repairs, and Context. Recorded repairs should link to the score and context change that triggered them; missing or reused scores must be labeled. Short tasks may trigger no repairs.
 
@@ -133,7 +139,7 @@ Run these checks in both interfaces:
 
 ## The event-log invariant
 
-The append-only SQLite event log is the source of truth. Prompts, model responses, tool starts/results, visibility changes, health scores, interventions, steering, and session lifecycle changes are recorded before downstream consumers observe them. Existing history is not rewritten: pruning changes visibility, compaction appends a replacement event, and branching creates a child session at a parent sequence. Replay, resume, the terminal UI, and the web viewer are projections of the same log.
+The append-only SQLite event log is the source of truth. Prompts, model responses, tool starts/results, visibility changes, health scores, interventions, steering, and session lifecycle changes are recorded before downstream consumers observe them. Repairs do not rewrite existing history: pruning changes visibility, compaction appends a replacement event, and branching creates a child session at a parent sequence. Explicit, confirmed chat deletion removes that conversation's saved history and descendant branches. Replay, resume, the terminal UI, and the web viewer are projections of the same log.
 
 Writes pass through one store-owned writer goroutine, and committed events are published to a channel-based bus. This preserves per-session sequence ordering while subscribers such as scoring, the intervention ladder, and live viewers operate away from the core loop.
 

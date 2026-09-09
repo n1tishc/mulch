@@ -82,6 +82,9 @@ func New(store Store, controls ...Control) *Server {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/sessions", s.sessions)
+	mux.HandleFunc("GET /api/workspaces", s.workspaces)
+	mux.HandleFunc("POST /api/workspaces", s.workspaces)
+	mux.HandleFunc("DELETE /api/sessions/{id}/history", s.deleteConversation)
 	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.config, nil) })
 	mux.HandleFunc("GET /api/sessions/{id}", s.sessionDetail)
 	mux.HandleFunc("POST /api/sessions/{id}/resume", s.resume)

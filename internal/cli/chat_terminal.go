@@ -50,7 +50,7 @@ func runTerminalChat(ctx context.Context, opts Options, control *chatControl, ou
 	appCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	m := &terminalChat{ctx: appCtx, control: control, output: output, width: 80, height: 24}
-	m.transcript = "Welcome to Mulch\n\nDescribe a coding task. Mulch can read, edit, and run tools in this workspace.\nType / for commands. /help lists controls.\n"
+	m.transcript = "Describe a task to get started.\n\nMulch can read, edit, and run tools in this directory.\nOpen /web during a task to follow the execution trace.\n"
 	if *control.existing {
 		m.transcript += "\n" + control.history(ctx)
 	}
@@ -80,6 +80,12 @@ func tickTerminal() tea.Cmd {
 
 func (m *terminalChat) append(text string) {
 	// Keep the screen bounded; the complete event log remains in SQLite.
+	if m.scroll > 0 {
+		width := max(16, min(m.width-4, 110))
+		before := strings.Count(ansi.Hardwrap(m.transcript, width, true), "\n")
+		after := strings.Count(ansi.Hardwrap(m.transcript+terminalSafe(text), width, true), "\n")
+		m.scroll += after - before
+	}
 	m.transcript += terminalSafe(text)
 	if len(m.transcript) > 200000 {
 		cut := len(m.transcript) - 150000
@@ -109,7 +115,7 @@ func (m *terminalChat) submit(text string) tea.Cmd {
 	if strings.HasPrefix(text, "/") {
 		if m.busy {
 			switch text {
-			case "/inspect", "/inspect --no-open":
+			case "/inspect", "/inspect --no-open", "/web", "/web --no-open":
 				result, _, err := m.control.command(m.ctx, text)
 				if err != nil {
 					m.append(err.Error() + "\n")
@@ -117,6 +123,7 @@ func (m *terminalChat) submit(text string) tea.Cmd {
 					m.append(result)
 				}
 			case "/cancel":
+				m.queued = nil
 				m.cancel()
 				m.append("Cancelling task…\n")
 			case "/exit", "/quit":
@@ -328,35 +335,45 @@ func (m *terminalChat) matches() []string {
 }
 
 func (m *terminalChat) View() string {
-	width := max(16, m.width-4)
-	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("111"))
+	width := max(16, min(m.width-4, 110))
+	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("108"))
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	state := "ready"
 	if m.busy {
 		state = fmt.Sprintf("%s working %s · Esc stop · %d queued", []string{"◐", "◓", "◑", "◒"}[m.frame%4], time.Since(m.started).Round(time.Second), len(m.queued))
 	}
-	header := accent.Bold(true).Render("MULCH") + "  " + terminalSafe(m.control.recorded.Model) + "  ·  " + string(m.control.config.Mode)
+	header := accent.Bold(true).Render("mulch") + "  " + terminalSafe(m.control.recorded.Model) + dim.Render("  ·  "+string(m.control.config.Mode))
 	header = ansi.Truncate(header, width, "…") + "\n" + dim.Render(ansi.Truncate(terminalSafe(m.control.recorded.Workdir), width, "…"))
 	before := terminalSafe(string(m.input[:m.cursor]))
 	after := terminalSafe(string(m.input[m.cursor:]))
-	editor := before + lipgloss.NewStyle().Reverse(true).Render(" ") + after
+	cursor := " "
+	if len(after) > 0 {
+		chars := []rune(after)
+		if chars[0] != '\n' {
+			cursor = string(chars[0])
+			after = string(chars[1:])
+		}
+	}
+	editor := before + lipgloss.NewStyle().Reverse(true).Render(cursor) + after
 	if len(m.input) == 0 {
 		editor += dim.Render(" Describe a task or type / for commands")
 	}
 	inputLines := strings.Split(ansi.Hardwrap(editor, width-2, true), "\n")
 	// Show the region around the cursor when composing a long multiline prompt.
 	cursorLine := len(strings.Split(ansi.Hardwrap(before+" ", width-2, true), "\n")) - 1
-	start := max(0, cursorLine-3)
-	end := min(len(inputLines), start+5)
+	editorHeight := min(5, max(1, m.height-10))
+	start := max(0, cursorLine-editorHeight+1)
+	end := min(len(inputLines), start+editorHeight)
 	inputLines = inputLines[start:end]
 	editor = accent.Render("› ") + strings.Join(inputLines, "\n  ")
-	suggestions := "Enter send · Alt+Enter newline · Tab commands · PgUp/PgDn scroll · Ctrl+D exit"
+	suggestions := "Enter send · Alt+Enter newline · / commands · /web trace"
 	menu := ""
 	menuLines := 0
 	if matches := m.matches(); len(matches) > 0 {
 		selected := min(m.selection, len(matches)-1)
 		first := max(0, selected-3)
-		for _, name := range matches[first:min(len(matches), first+4)] {
+		menuHeight := min(4, max(0, m.height-8-len(inputLines)))
+		for _, name := range matches[first:min(len(matches), first+menuHeight)] {
 			description := ""
 			for _, command := range chatCommands {
 				if command.name == name {
@@ -373,8 +390,11 @@ func (m *terminalChat) View() string {
 		}
 		suggestions = "↑/↓ choose · Tab complete · Enter run · Esc dismiss"
 	}
+	if m.scroll > 0 {
+		state += " · reading history · PgDn for latest"
+	}
 	footer := dim.Render(ansi.Truncate(suggestions, width, "…"))
-	bodyHeight := max(1, m.height-8-len(inputLines)-menuLines)
+	bodyHeight := max(1, m.height-7-len(inputLines)-menuLines)
 	lines := strings.Split(ansi.Hardwrap(m.transcript, width, true), "\n")
 	scroll := min(m.scroll, max(0, len(lines)-bodyHeight))
 	bottom := len(lines) - scroll
@@ -383,5 +403,5 @@ func (m *terminalChat) View() string {
 	for n := bottom - top; n < bodyHeight; n++ {
 		body += "\n"
 	}
-	return lipgloss.NewStyle().Padding(0, 2).Render(header + "\n" + dim.Render(strings.Repeat("─", width)) + "\n" + body + "\n" + accent.Render(state) + "\n" + dim.Render(strings.Repeat("─", width)) + "\n" + editor + "\n" + menu + footer)
+	return lipgloss.NewStyle().Padding(0, 2).Render(header + "\n" + dim.Render(strings.Repeat("─", width)) + "\n" + body + "\n" + accent.Render(ansi.Truncate(state, width, "…")) + "\n" + dim.Render(strings.Repeat("─", width)) + "\n" + editor + "\n" + menu + footer)
 }
