@@ -25,7 +25,8 @@ builds:
       - -s -w -X main.version={{.Version}}
 
 archives:
-  - ids:
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    ids:
       - mulch
     formats:
       - tar.gz
@@ -39,3 +40,7 @@ checksum:
 
 changelog:
   disable: true
+
+release:
+  extra_files:
+    - glob: scripts/install.sh

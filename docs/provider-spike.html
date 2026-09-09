@@ -1,0 +1,22 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Provider spike · Mulch</title><style>
+  :root { color-scheme: light dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+  body { max-width: 900px; margin: 0 auto; padding: 3rem 1.5rem 5rem; line-height: 1.6; color: #202124; background: #fff; }
+  h1, h2, h3 { line-height: 1.2; margin-top: 2.25rem; } h1 { font-size: 2.3rem; } h2 { border-bottom: 1px solid #d0d7de; padding-bottom: .35rem; }
+  a { color: #0969da; } code { padding: .12rem .32rem; border-radius: .3rem; background: #eef1f4; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  pre { overflow: auto; padding: 1rem; border-radius: .5rem; background: #f6f8fa; } pre code { padding: 0; background: none; }
+  table { width: 100%; border-collapse: collapse; display: block; overflow-x: auto; } th, td { border: 1px solid #d0d7de; padding: .55rem .7rem; text-align: left; vertical-align: top; } th { background: #f6f8fa; }
+  li + li { margin-top: .3rem; } hr { border: 0; border-top: 1px solid #d0d7de; margin: 2rem 0; }
+  @media (prefers-color-scheme: dark) { body { color: #e6edf3; background: #0d1117; } a { color: #58a6ff; } h2, th, td { border-color: #30363d; } code, pre, th { background: #161b22; } }
+</style></head><body><main><h1 id="provider-spike">Provider spike</h1>
+<p>Ticket <a href="https://github.com/n1tishc/mulch/issues/1">#1</a> gates Mulch's provider adapter on a live, single-step streaming probe. The probe is isolated behind the <code>spike</code> build tag because it makes billable network requests.</p>
+<p>Run it with:</p>
+<pre><code class="language-sh">MULCH_PROVIDER_API_KEY=... go test -tags=spike -run TestLiveProviderGate -v ./internal/provider</code></pre>
+<p>The defaults target OpenCode Go's OpenAI-compatible endpoint:</p>
+<pre><code class="language-text">MULCH_PROVIDER_BASE_URL=https://opencode.ai/zen/go/v1
+MULCH_MODEL=glm-5.3-flash</code></pre>
+<p>Both values can be overridden, so the gate is not coupled to OpenCode Go or to a provider-owned environment variable. <code>MULCH_PROVIDER_BASE_URL</code> is the API root; the OpenAI SDK appends <code>/chat/completions</code>.</p>
+<p>The test proves that the selected provider adapter:</p>
+<ul><li>returns assistant text and a provider-assigned tool-call identifier without executing the supplied tool;</li><li>reports the same positive token counts in the provider finish chunk and final result;</li><li>accepts the exact assistant response blocks and tool-call identifier on the next request; and</li><li>returns <code>context.Canceled</code> less than 500 ms after a streaming request is cancelled.</li></ul>
+<h2 id="decision">Decision</h2>
+<p>GoAI <code>v0.10.0</code> passed content, tool-call identifier, usage, and replay checks against OpenCode Go, but failed the cancellation contract: cancelling the stream returned no error. Per the gate's fail-fast rule, GoAI was rejected.</p>
+<p>The fallback uses the official OpenAI Go SDK <code>github.com/openai/openai-go/v3</code> pinned at <code>v3.47.0</code>, configured against the same OpenAI-compatible endpoint. OpenCode Go does not advertise an embedding endpoint, so embeddings remain separately configured; Voyage will use a standard-library HTTP adapter and therefore adds no dependency.</p></main></body></html>

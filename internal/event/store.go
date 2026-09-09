@@ -32,6 +32,8 @@ const (
 	writeResumeSession
 	writeSetVisible
 	writeSaveEmbeddings
+	writeWebRequest
+	writeLease
 )
 
 type writeRequest struct {
@@ -52,6 +54,7 @@ type writeRequest struct {
 	reply      chan writeResult
 }
 type writeResult struct {
+	receipt RequestReceipt
 	event   Event
 	session Session
 	err     error
@@ -138,6 +141,36 @@ func (s *SQLiteStore) writeLoop(ctx context.Context) {
 
 func (s *SQLiteStore) executeWrite(conn *sql.Conn, req writeRequest) writeResult {
 	switch req.kind {
+	case writeWebRequest:
+		if req.by == "finish" {
+			_, err := conn.ExecContext(req.ctx, `UPDATE web_requests SET response=?,error=? WHERE request_id=?`, req.reason, req.label, req.model)
+			return writeResult{err: err}
+		}
+		result, err := conn.ExecContext(req.ctx, `INSERT OR IGNORE INTO web_requests(request_id,fingerprint) VALUES(?,?)`, req.model, req.label)
+		if err != nil {
+			return writeResult{err: err}
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return writeResult{err: err}
+		}
+		x := RequestReceipt{Fresh: n == 1}
+		var fingerprint string
+		err = conn.QueryRowContext(req.ctx, `SELECT fingerprint,response,error FROM web_requests WHERE request_id=?`, req.model).Scan(&fingerprint, &x.Response, &x.Error)
+		if err == nil && fingerprint != req.label {
+			err = errors.New("request_id already used for different content")
+		}
+		return writeResult{receipt: x, err: err}
+	case writeLease:
+		if req.by == "release" {
+			_, err := conn.ExecContext(req.ctx, `DELETE FROM execution_leases WHERE session_id=? AND owner=?`, req.sessionID, req.label)
+			return writeResult{err: err}
+		}
+		_, err := conn.ExecContext(req.ctx, `INSERT INTO execution_leases(session_id,owner) VALUES(?,?)`, req.sessionID, req.label)
+		if err != nil {
+			return writeResult{err: fmt.Errorf("session execution is already owned or cannot be claimed: %w", err)}
+		}
+		return writeResult{}
 	case writeCreateSession:
 		x := req.session
 		_, err := conn.ExecContext(req.ctx, `INSERT INTO sessions(id,parent_id,fork_seq,label,task,model,context_window,workdir,created_at,status) VALUES(?,?,?,?,?,?,?,?,?,?)`, x.ID, nullableString(x.ParentID), x.ForkSeq, nullableString(x.Label), x.Task, x.Model, x.ContextWindow, x.Workdir, x.CreatedAt.Format(time.RFC3339Nano), StatusRunning)

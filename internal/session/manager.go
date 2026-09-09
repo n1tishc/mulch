@@ -110,6 +110,14 @@ func (m *Manager) launch(ctx context.Context, id, task string, opts RunOpts, run
 		return "", errors.New("session manager closed")
 	}
 	m.mu.Lock()
+	if previous, ok := m.sessions[id]; ok && !previous.status.Done {
+		m.mu.Unlock()
+		m.lifeMu.Unlock()
+		stopCallerCancel()
+		cancel()
+		<-m.limit
+		return "", errors.New("session is already running")
+	}
 	m.sessions[id] = entry
 	m.mu.Unlock()
 	m.wg.Add(1)

@@ -38,3 +38,14 @@ CREATE TABLE IF NOT EXISTS embeddings (
   vector BLOB NOT NULL,
   PRIMARY KEY(model, hash)
 );
+
+CREATE TABLE IF NOT EXISTS web_requests (
+  request_id TEXT PRIMARY KEY,
+  fingerprint TEXT NOT NULL,
+  response TEXT NOT NULL DEFAULT '',
+  error TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS execution_leases (
+  session_id TEXT PRIMARY KEY,
+  owner TEXT NOT NULL
+);

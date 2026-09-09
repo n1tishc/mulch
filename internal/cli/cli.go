@@ -24,6 +24,7 @@ import (
 	"github.com/n1tishc/mulch/internal/hook"
 	"github.com/n1tishc/mulch/internal/intervene"
 	"github.com/n1tishc/mulch/internal/provider"
+	harness "github.com/n1tishc/mulch/internal/runtime"
 	"github.com/n1tishc/mulch/internal/score"
 	"github.com/n1tishc/mulch/internal/server"
 	"github.com/n1tishc/mulch/internal/session"
@@ -35,6 +36,8 @@ const defaultModel = "glm-5.3-flash"
 type LLMFactory func(apiKey, baseURL string) provider.LLM
 type EmbedderFactory func(apiKey, baseURL, model string) provider.Embedder
 type Options struct {
+	Stdin           io.Reader
+	Interrupts      <-chan os.Signal
 	Stdout, Stderr  io.Writer
 	Getenv          func(string) string
 	LLMFactory      LLMFactory
@@ -43,6 +46,9 @@ type Options struct {
 }
 
 func Execute(ctx context.Context, args []string, opts Options) error {
+	if opts.Stdin == nil {
+		opts.Stdin = os.Stdin
+	}
 	if opts.Stdout == nil {
 		opts.Stdout = os.Stdout
 	}
@@ -51,6 +57,10 @@ func Execute(ctx context.Context, args []string, opts Options) error {
 	}
 	if opts.Getenv == nil {
 		opts.Getenv = os.Getenv
+	}
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		_, err := fmt.Fprintln(opts.Stdout, "Mulch — terminal coding agent and context-repair harness\n\n  mulch [chat flags]       Open the interactive terminal\n  mulch chat --help        Show interactive launch options\n  mulch run PROMPT         Execute a single task\n  mulch web                Open the local coding workspace\n  mulch serve              Start the browser server\n  mulch sessions           List saved sessions\n  mulch resume ID PROMPT   Continue a saved task once\n  mulch replay ID          Replay a saved trace\n  mulch branch ID --at N   Branch a session\n  mulch eval SCENARIO      Run correctness evaluation\n  mulch version           Show version\n\nInside the terminal: type / to browse commands or /help for controls.")
+		return err
 	}
 	if len(args) == 1 && args[0] == "version" {
 		version := opts.Version
@@ -68,9 +78,14 @@ func Execute(ctx context.Context, args []string, opts Options) error {
 	}
 	_ = godotenv.Load()
 	if len(args) == 0 {
-		return usageError()
+		return chat(ctx, nil, opts)
+	}
+	if strings.HasPrefix(args[0], "-") && args[0] != "--help" && args[0] != "-h" {
+		return chat(ctx, args, opts)
 	}
 	switch args[0] {
+	case "chat":
+		return chat(ctx, args[1:], opts)
 	case "run":
 		return run(ctx, args[1:], opts)
 	case "eval":
@@ -89,63 +104,134 @@ func Execute(ctx context.Context, args []string, opts Options) error {
 		return sessions(ctx, args[1:], opts)
 	case "serve":
 		return serve(ctx, args[1:], opts)
+	case "web":
+		return serveMode(ctx, args[1:], opts, true)
 	default:
 		return usageError()
 	}
 }
 
 func usageError() error {
-	return errors.New("usage: mulch <run|eval|replay|resume|branch|tree|label|sessions|serve|version> [flags]")
+	return errors.New("usage: mulch <chat|run|eval|replay|resume|branch|tree|label|sessions|serve|version> [flags]")
 }
 
 func serve(ctx context.Context, args []string, opts Options) error {
-	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
+	return serveMode(ctx, args, opts, false)
+}
+
+func serveMode(ctx context.Context, args []string, opts Options, web bool) error {
+	command := "serve"
+	if web {
+		command = "web"
+	}
+	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(opts.Stderr)
-	address := flags.String("addr", ":4141", "listen address")
+	defaultAddr := "127.0.0.1:4141"
+	if web {
+		defaultAddr = "127.0.0.1:0"
+	}
+	address := flags.String("addr", defaultAddr, "listen address")
+	noOpen := flags.Bool("no-open", false, "print URL without opening the browser")
+	selected := flags.String("session", "", "session to inspect")
+	workdir := flags.String("workdir", ".", "initial workspace")
+	policyPath := flags.String("policy", "", "intervention policy JSON file")
+	raceMode := flags.Bool("race", false, "compare repairs for dashboard sessions")
+	noIntervene := flags.Bool("no-intervene", false, "score dashboard sessions without interventions")
 	dbPath := flags.String("db", envOr(opts.Getenv, "MULCH_DB", defaultDB()), "event database")
 	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	if flags.NArg() != 0 {
-		return errors.New("mulch serve takes no arguments")
+		return fmt.Errorf("mulch %s takes no arguments", command)
+	}
+	workspace, err := filepath.Abs(*workdir)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(workspace)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return errors.New("workspace must be a directory")
+	}
+	if *raceMode && *noIntervene {
+		return errors.New("--race cannot be combined with --no-intervene")
+	}
+	policy, err := configuredPolicy(*policyPath)
+	if err != nil {
+		return err
+	}
+	mode := harness.Repair
+	if *raceMode {
+		mode = harness.Race
+	}
+	if *noIntervene {
+		mode = harness.Observe
 	}
 	listener, err := net.Listen("tcp", *address)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", *address, err)
 	}
-	_ = listener.Close()
+	defer func() { _ = listener.Close() }()
 	if err := os.MkdirAll(filepath.Dir(*dbPath), 0700); err != nil {
 		return fmt.Errorf("create database directory: %w", err)
 	}
 	eventBus := bus.New()
-	store, err := event.Open(context.WithoutCancel(ctx), *dbPath, eventBus)
+	router := &harness.Router{}
+	publisher := &fanoutPublisher{}
+	publisher.Add(eventBus)
+	publisher.Add(router)
+	store, err := event.Open(context.WithoutCancel(ctx), *dbPath, publisher)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = store.Close() }()
+	if *selected != "" {
+		if _, err := store.Session(ctx, *selected); err != nil {
+			return fmt.Errorf("session: %w", err)
+		}
+	}
 	var control server.Control
 	var manager *session.Manager
 	if key := opts.Getenv("MULCH_PROVIDER_API_KEY"); key != "" {
 		model := envOr(opts.Getenv, "MULCH_MODEL", defaultModel)
-		dependencies := func(run session.RunOpts, steering *session.Steering) agent.Dependencies {
-			workdir := run.Workdir
-			if workdir == "" {
-				workdir = "."
+		execute := func(resume bool) session.Runner {
+			return func(runCtx context.Context, id, task string, run session.RunOpts, steering *session.Steering) error {
+				workdir := run.Workdir
+				if workdir == "" {
+					workdir = "."
+				}
+				recorded := event.Session{ID: id, Task: task, Model: model, Workdir: workdir, ContextWindow: 200000}
+				if resume {
+					var err error
+					recorded, err = store.Session(runCtx, id)
+					if err != nil {
+						return err
+					}
+				}
+				config := runtimeConfig(store, router, opts, key, recorded.Model, recorded.ContextWindow, mode, policy)
+				return config.Execute(runCtx, recorded, resume, task, []hook.Hook{steering.Bind(store)}, nil)
 			}
-			return agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: tool.NewExecutor([]tool.Tool{tool.NewRead(workdir), tool.NewWrite(workdir), tool.NewEdit(workdir), tool.NewBash(workdir)}), Model: model, Workdir: workdir, ContextWindow: 200000, Hooks: []hook.Hook{steering.Bind(store)}}
 		}
-		manager = session.New(session.Options{Bus: eventBus, Run: func(runCtx context.Context, id, task string, run session.RunOpts, steering *session.Steering) error {
-			_, runErr := agent.RunSession(runCtx, dependencies(run, steering), id, task, nil)
-			return runErr
-		}, Resume: func(runCtx context.Context, id, task string, run session.RunOpts, steering *session.Steering) error {
-			_, runErr := agent.Resume(runCtx, dependencies(run, steering), id, task, nil)
-			return runErr
-		}})
+		manager = session.New(session.Options{Bus: eventBus, Run: execute(false), Resume: execute(true)})
 		control = server.NewControl(manager, store)
 		defer func() { _ = manager.Close() }()
 	}
-	_, _ = fmt.Fprintf(opts.Stdout, "mulch viewer listening on http://%s\n", viewerAddress(*address))
-	return server.New(store, control).Serve(ctx, *address)
+	url := "http://" + viewerAddress(listener.Addr().String())
+	if *selected != "" {
+		url += "?session=" + *selected
+	}
+	_, _ = fmt.Fprintf(opts.Stdout, "mulch viewer listening on %s\n", url)
+	if web && !*noOpen && opts.Getenv("SSH_CONNECTION") == "" && opts.Getenv("SSH_TTY") == "" {
+		if err := openBrowser(url); err != nil {
+			_, _ = fmt.Fprintf(opts.Stderr, "Open the URL above in your browser (%v).\n", err)
+		}
+	}
+	return server.New(store, control).WithConfig(server.Config{Workspace: workspace, Model: envOr(opts.Getenv, "MULCH_MODEL", defaultModel), Mode: string(mode), Policy: policy, Ready: control != nil}).ServeListener(ctx, listener)
 }
 
 func viewerAddress(address string) string {
@@ -158,7 +244,10 @@ func viewerAddress(address string) string {
 func evalCommand(ctx context.Context, args []string, opts Options) error {
 	flags := flag.NewFlagSet("eval", flag.ContinueOnError)
 	flags.SetOutput(opts.Stderr)
-	runs := flags.Int("runs", 10, "runs per intervention mode")
+	runs := flags.Int("runs", 2, "runs per evaluation mode")
+	modesFlag := flags.String("modes", "plain,control,intervention,race", "comma-separated evaluation modes")
+	seed := flags.Int64("seed", 1, "reproducible mode-order seed")
+	tokenBudget := flags.Int("token-budget", 40000, "per-run token budget across agent, judge, summary, and candidates")
 	concurrency := flags.Int("concurrency", 5, "maximum concurrent sessions")
 	output := flags.String("output", ".", "report directory")
 	model := flags.String("model", envOr(opts.Getenv, "MULCH_MODEL", defaultModel), "model")
@@ -168,7 +257,7 @@ func evalCommand(ctx context.Context, args []string, opts Options) error {
 	if flags.NArg() != 1 {
 		return errors.New("mulch eval requires exactly one scenario file")
 	}
-	if *runs < 1 || *concurrency < 1 {
+	if *runs < 1 || *concurrency < 1 || *tokenBudget < 1 {
 		return errors.New("--runs and --concurrency must be positive")
 	}
 	key := opts.Getenv("MULCH_PROVIDER_API_KEY")
@@ -179,7 +268,11 @@ func evalCommand(ctx context.Context, args []string, opts Options) error {
 	if err != nil {
 		return err
 	}
-	result, err := meval.Run(ctx, scenario, meval.Options{Runs: *runs, Concurrency: *concurrency, OutputDir: *output, Model: *model, LLM: func() provider.LLM { return opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")) }})
+	var modes []harness.Mode
+	for _, m := range strings.Split(*modesFlag, ",") {
+		modes = append(modes, harness.Mode(strings.TrimSpace(m)))
+	}
+	result, err := meval.Run(ctx, scenario, meval.Options{Modes: modes, Seed: *seed, TokenBudget: *tokenBudget, Runs: *runs, Concurrency: *concurrency, OutputDir: *output, Model: *model, LLM: func() provider.LLM { return opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")) }})
 	if err != nil {
 		return err
 	}
@@ -253,6 +346,11 @@ func continueCLI(ctx context.Context, dbPath, id, prompt string, jsonMode bool, 
 		return err
 	}
 	defer func() { _ = store.Close() }()
+	release, err := store.AcquireExecution(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer release()
 	session, err := store.Session(ctx, id)
 	if err != nil {
 		return fmt.Errorf("load session: %w", err)
@@ -450,26 +548,19 @@ func run(ctx context.Context, args []string, opts Options) error {
 	if *jsonMode {
 		emit = func(string) {}
 	}
+	router := &harness.Router{}
+	publisher.Add(router)
+	runMode := harness.Repair
+	if *noIntervene {
+		runMode = harness.Observe
+	}
+	if *raceMode {
+		runMode = harness.Race
+	}
+	config := runtimeConfig(store, router, opts, key, *model, *contextWindow, runMode, policy)
 	manager := session.New(session.Options{Bus: eventBus, Run: func(runCtx context.Context, id, task string, _ session.RunOpts, steering *session.Steering) error {
-		judge := opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL"))
-		coherence := score.NewCoherenceWithModel(judge, envOr(opts.Getenv, "MULCH_JUDGE_MODEL", *model))
 		recorded := event.Session{ID: id, Task: task, Model: *model, Workdir: *workdir, ContextWindow: *contextWindow}
-		scoring := score.NewRunnerWithWeights(store, recorded, healthScorers(opts, store, coherence), healthWeights(opts))
-		publisher.Add(scoring)
-		sessionHooks := []hook.Hook{scoring}
-		if !*noIntervene {
-			ladder := intervene.NewConfigured(store, policy, coherence).WithSession(id).WithSummarizer(intervene.NewLLMSummarizer(judge, envOr(opts.Getenv, "MULCH_JUDGE_MODEL", *model)))
-			if *raceMode {
-				racer := intervene.NewRace(store, policy, raceCandidateRunner(store, publisher, opts, key, *model, *contextWindow))
-				ladder.WithRace(racer)
-			}
-			publisher.Add(ladder)
-			sessionHooks = append(sessionHooks, ladder)
-		}
-		sessionHooks = append(sessionHooks, steering.Bind(store))
-		executor := tool.NewExecutor([]tool.Tool{tool.NewRead(*workdir), tool.NewWrite(*workdir), tool.NewEdit(*workdir), tool.NewBash(*workdir)})
-		_, runErr := agent.RunSession(runCtx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: *model, Workdir: *workdir, ContextWindow: *contextWindow, Hooks: sessionHooks}, id, task, emit)
-		return runErr
+		return config.Execute(runCtx, recorded, false, task, []hook.Hook{steering.Bind(store)}, emit)
 	}})
 	defer func() { _ = manager.Close() }()
 	id, runErr := manager.StartWith(ctx, flags.Arg(0), session.RunOpts{Workdir: *workdir})
@@ -490,80 +581,12 @@ func run(ctx context.Context, args []string, opts Options) error {
 	return runErr
 }
 
-func raceCandidateRunner(store *event.SQLiteStore, publisher *fanoutPublisher, opts Options, key, model string, contextWindow int) intervene.CandidateRunner {
-	return func(ctx context.Context, child event.Session, _ intervene.Action) (event.ScoreHealth, error) {
-		isolatedWorkdir, cleanup, err := snapshotWorkdir(child.Workdir)
-		if err != nil {
-			return event.ScoreHealth{}, fmt.Errorf("snapshot race workspace: %w", err)
-		}
-		defer cleanup()
-		child.Workdir = isolatedWorkdir
-		history, err := store.List(ctx, child.ID, 1)
-		if err != nil {
-			return event.ScoreHealth{}, err
-		}
-		judge := opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL"))
-		coherence := score.NewCoherenceWithModel(judge, envOr(opts.Getenv, "MULCH_JUDGE_MODEL", model))
-		scoring := score.NewRunnerWithWeights(store, child, healthScorers(opts, store, coherence), healthWeights(opts), history...)
-		publisher.Add(scoring)
-		executor := tool.NewExecutor([]tool.Tool{tool.NewRead(child.Workdir), tool.NewWrite(child.Workdir), tool.NewEdit(child.Workdir), tool.NewBash(child.Workdir)})
-		_, runErr := agent.Resume(ctx, agent.Dependencies{Store: store, LLM: opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")), Tools: executor, Model: model, Workdir: child.Workdir, ContextWindow: contextWindow, MaxTurns: 1, Hooks: []hook.Hook{scoring}}, child.ID, "", nil)
-		events, listErr := store.List(context.WithoutCancel(ctx), child.ID, 1)
-		var latest event.ScoreHealth
-		found := false
-		for _, candidate := range events {
-			if candidate.Type == event.TypeScoreHealth && candidate.Decode(&latest) == nil {
-				found = true
-			}
-		}
-		if !found {
-			return event.ScoreHealth{}, errors.Join(runErr, listErr, errors.New("race candidate produced no health score"))
-		}
-		// A tool-using candidate reaches the deliberate one-turn limit after its
-		// recorded tool results; a score still makes that outcome comparable.
-		return latest, listErr
-	}
-}
-
-func snapshotWorkdir(source string) (string, func(), error) {
-	root, err := os.MkdirTemp("", "mulch-race-")
-	if err != nil {
-		return "", func() {}, err
-	}
-	cleanup := func() { _ = os.RemoveAll(root) }
-	err = filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		relative, relErr := filepath.Rel(source, path)
-		if relErr != nil {
-			return relErr
-		}
-		if entry.IsDir() && entry.Name() == ".git" && relative != "." {
-			return filepath.SkipDir
-		}
-		target := filepath.Join(root, relative)
-		if entry.IsDir() {
-			return os.MkdirAll(target, 0755)
-		}
-		info, infoErr := entry.Info()
-		if infoErr != nil {
-			return infoErr
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		contents, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return readErr
-		}
-		return os.WriteFile(target, contents, info.Mode().Perm())
-	})
-	if err != nil {
-		cleanup()
-		return "", func() {}, err
-	}
-	return root, cleanup, nil
+func runtimeConfig(store *event.SQLiteStore, router *harness.Router, opts Options, key, model string, window int, mode harness.Mode, policy intervene.Policy) harness.Config {
+	return harness.Config{Store: store, Router: router, Model: model, JudgeModel: envOr(opts.Getenv, "MULCH_JUDGE_MODEL", model), ContextWindow: window, Mode: mode, Policy: policy, Weights: healthWeights(opts),
+		LLM: func(id, role string) provider.LLM {
+			return opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL"))
+		},
+		Scorers: func(coherence *score.Coherence) []score.Scorer { return healthScorers(opts, store, coherence) }}
 }
 
 func submitToDaemon(ctx context.Context, opts Options, task, workdir string, eligible bool) (string, bool, error) {

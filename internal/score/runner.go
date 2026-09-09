@@ -164,9 +164,9 @@ func (r *Runner) run() {
 func (r *Runner) score(job scoreJob) {
 	result := r.composite.Score(r.ctx, job.input)
 	for _, partial := range result.Partials {
-		r.append(job, event.TypeScorePartial, event.ScorePartial{Name: partial.Name, TimeoutMS: partial.TimeoutMS, UsedPrevious: partial.UsedPrevious})
+		r.append(job, event.TypeScorePartial, event.ScorePartial{Name: partial.Name, TimeoutMS: partial.TimeoutMS, UsedPrevious: partial.UsedPrevious, Reason: partial.Reason})
 	}
-	health := event.ScoreHealth{TurnScored: job.turn, Details: result.Details, LatencyMS: result.Latency.Milliseconds(), OnCriticalPath: r.waiting.Load()}
+	health := event.ScoreHealth{TurnScored: job.turn, Details: result.Details, Freshness: result.Freshness, LatencyMS: result.Latency.Milliseconds(), OnCriticalPath: r.waiting.Load()}
 	var weighted, totalWeight float64
 	for name, value := range result.Scores {
 		copy := value

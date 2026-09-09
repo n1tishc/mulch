@@ -1,0 +1,14 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Evaluation policy evidence · Mulch</title><style>
+  :root { color-scheme: light dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+  body { max-width: 900px; margin: 0 auto; padding: 3rem 1.5rem 5rem; line-height: 1.6; color: #202124; background: #fff; }
+  h1, h2, h3 { line-height: 1.2; margin-top: 2.25rem; } h1 { font-size: 2.3rem; } h2 { border-bottom: 1px solid #d0d7de; padding-bottom: .35rem; }
+  a { color: #0969da; } code { padding: .12rem .32rem; border-radius: .3rem; background: #eef1f4; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  pre { overflow: auto; padding: 1rem; border-radius: .5rem; background: #f6f8fa; } pre code { padding: 0; background: none; }
+  table { width: 100%; border-collapse: collapse; display: block; overflow-x: auto; } th, td { border: 1px solid #d0d7de; padding: .55rem .7rem; text-align: left; vertical-align: top; } th { background: #f6f8fa; }
+  li + li { margin-top: .3rem; } hr { border: 0; border-top: 1px solid #d0d7de; margin: 2rem 0; }
+  @media (prefers-color-scheme: dark) { body { color: #e6edf3; background: #0d1117; } a { color: #58a6ff; } h2, th, td { border-color: #30363d; } code, pre, th { background: #161b22; } }
+</style></head><body><main><h1 id="evaluation-policy-evidence">Evaluation policy evidence</h1>
+<p>The checked-in <code>poisoned-context-smoke</code> scenario is exercised in automated tests with an offline recording provider. Control and intervention runs both retain a 100% success rate, so there is no measured regression that warrants changing the default intervention policy in this ticket.</p>
+<p>Real-provider results are deliberately not claimed by the test suite. Run <code>mulch eval --runs 5 --concurrency 5 testdata/scenarios/poisoned-context.yaml</code> and retain the generated JSON and Markdown when tuning thresholds. If the intervention success rate is lower than control, adjust <code>intervene.DefaultPolicy</code> and record the before/after reports here.</p>
+<h2 id="correctness-pilot-2026-09-08">Correctness pilot, 2026-09-08</h2>
+<p>The <a href="correctness-pilot-results.html">16-run pilot</a> does not support a quality advantage. It recorded no interventions or races; judge failures and budget stops prevented an efficacy comparison. The original default policy remains unchanged so the baseline is reproducible. Scorer diagnostics, deadline behavior, routing reachability, and budget calibration need separate validation before tuning and repeating on held-out tasks.</p></main></body></html>

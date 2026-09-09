@@ -2,6 +2,7 @@ package score_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"testing/synctest"
@@ -9,6 +10,30 @@ import (
 
 	"github.com/n1tishc/mulch/internal/score"
 )
+
+func TestCompositeRecordsFailureCategoriesAndFreshness(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var invalid any
+		badJSON := json.Unmarshal([]byte("invalid"), &invalid)
+		c := score.NewComposite([]score.Scorer{
+			fakeScorer{name: "fresh", value: .8, deadline: time.Second},
+			fakeScorer{name: "reused", err: badJSON, deadline: time.Second},
+			fakeScorer{name: "missing", err: context.Canceled, deadline: time.Second},
+			fakeScorer{name: "timeout", delay: time.Second, deadline: time.Millisecond},
+		}, map[string]float64{"reused": .5})
+		got := c.Score(t.Context(), score.Input{})
+		if got.Freshness["fresh"] != "fresh" || got.Freshness["reused"] != "reused" || got.Freshness["missing"] != "unavailable" {
+			t.Fatal(got.Freshness)
+		}
+		reasons := map[string]string{}
+		for _, partial := range got.Partials {
+			reasons[partial.Name] = partial.Reason
+		}
+		if reasons["reused"] != "invalid_response" || reasons["missing"] != "cancelled" || reasons["timeout"] != "timeout" {
+			t.Fatal(reasons)
+		}
+	})
+}
 
 type fakeScorer struct {
 	name            string

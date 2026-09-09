@@ -35,7 +35,7 @@ func NewCoherence(judge provider.LLM) *Coherence {
 	return NewCoherenceWithModel(judge, "")
 }
 func NewCoherenceWithModel(judge provider.LLM, model string) *Coherence {
-	return &Coherence{judge: judge, model: model, last: Result{Score: 1}}
+	return &Coherence{judge: judge, model: model, last: Result{Score: 1, Freshness: "unverified"}}
 }
 func (*Coherence) Name() string            { return "coherence" }
 func (*Coherence) Deadline() time.Duration { return 8 * time.Second }
@@ -48,6 +48,9 @@ func (c *Coherence) Score(ctx context.Context, input Input) (Result, error) {
 	last := c.last
 	c.mu.Unlock()
 	if !due {
+		if last.Freshness != "unverified" {
+			last.Freshness = "reused"
+		}
 		return last, nil
 	}
 	if c.judge == nil {
@@ -55,7 +58,7 @@ func (c *Coherence) Score(ctx context.Context, input Input) (Result, error) {
 	}
 	pairs := coherencePairs(input.Visible)
 	if len(pairs) == 0 {
-		return Result{Score: 1}, nil
+		return Result{Score: 1, Freshness: "not_applicable"}, nil
 	}
 	body, _ := json.Marshal(map[string]any{"instruction": "Classify each pair as consistent, contradictory, or unrelated. Return strict JSON only.", "pairs": pairs})
 	out := make(chan provider.Delta, 64)

@@ -37,11 +37,11 @@ func NewRace(store RaceStore, policy Policy, run CandidateRunner) *Race {
 }
 
 type raceOutcome struct {
-	branch   event.Session
-	action   Action
-	health   event.ScoreHealth
-	affected []int64
-	err      error
+	branch         event.Session
+	action         Action
+	health         event.ScoreHealth
+	parentAffected []int64
+	err            error
 }
 
 // Compete forks two candidates, applies Prune and Reanchor, and mirrors the
@@ -107,7 +107,7 @@ func (r *Race) Compete(ctx context.Context, turn *hook.Turn, health event.ScoreH
 			}
 			_ = applied // an inapplicable prune is a valid unchanged-context candidate
 			score, runErr := r.run(ctx, branch, action)
-			results <- raceOutcome{branch: branch, action: action, health: score, affected: affected, err: runErr}
+			results <- raceOutcome{branch: branch, action: action, health: score, parentAffected: parentSeqsForBranch(turn.Visible, visible, affected), err: runErr}
 		}()
 	}
 	a, b := <-results, <-results
@@ -117,7 +117,7 @@ func (r *Race) Compete(ctx context.Context, turn *hook.Turn, health event.ScoreH
 		return false, errors.Join(a.err, b.err)
 	}
 	winner, loser := a, b
-	if b.health.Composite > a.health.Composite {
+	if b.health.Composite > a.health.Composite || (b.health.Composite == a.health.Composite && b.action == ActionPrune) {
 		winner, loser = b, a
 	}
 	if err := r.mirror(ctx, turn, winner); err != nil {
@@ -142,6 +142,7 @@ func remapHealthSeqs(health event.ScoreHealth, parent, child []event.Event) even
 	if !ok {
 		return health
 	}
+	mapping := branchSeqs(parent, child)
 	for _, raw := range items {
 		item, ok := raw.(map[string]any)
 		if !ok {
@@ -151,44 +152,52 @@ func remapHealthSeqs(health event.ScoreHealth, parent, child []event.Event) even
 		if !ok {
 			continue
 		}
-		for _, source := range parent {
-			if source.Seq != int64(parentSeq) {
-				continue
-			}
-			for _, target := range child {
-				if target.Type == source.Type && target.Turn == source.Turn && string(target.Payload) == string(source.Payload) {
-					item["seq"] = float64(target.Seq)
-					break
-				}
-			}
+		if childSeq, ok := mapping[int64(parentSeq)]; ok {
+			item["seq"] = float64(childSeq)
+		} else {
+			delete(item, "seq") // stale parent references must not alias a child event
 		}
 	}
 	return health
 }
 
+// Branch copies preserve order but renumber visible events. Consume each match
+// once: identical payloads in the same turn are still distinct occurrences.
+func branchSeqs(parent, child []event.Event) map[int64]int64 {
+	result := make(map[int64]int64, len(parent))
+	next := 0
+	for _, source := range parent {
+		for next < len(child) {
+			target := child[next]
+			next++
+			if target.Type == source.Type && target.Turn == source.Turn && string(target.Payload) == string(source.Payload) {
+				result[source.Seq] = target.Seq
+				break
+			}
+		}
+	}
+	return result
+}
+
+func parentSeqsForBranch(parent, child []event.Event, affected []int64) []int64 {
+	mapping := branchSeqs(parent, child)
+	reverse := make(map[int64]int64, len(mapping))
+	for parentSeq, childSeq := range mapping {
+		reverse[childSeq] = parentSeq
+	}
+	result := make([]int64, 0, len(affected))
+	for _, childSeq := range affected {
+		if parentSeq, ok := reverse[childSeq]; ok {
+			result = append(result, parentSeq)
+		}
+	}
+	return result
+}
+
 func (r *Race) mirror(ctx context.Context, turn *hook.Turn, winner raceOutcome) error {
 	switch winner.action {
 	case ActionPrune:
-		// Branch sequence numbers can differ because only visible history is
-		// copied. Match affected branch events to parent events by payload.
-		child, err := r.store.List(ctx, winner.branch.ID, 1)
-		if err != nil {
-			return err
-		}
-		parentSeqs := make([]int64, 0, len(winner.affected))
-		for _, childSeq := range winner.affected {
-			for _, ce := range child {
-				if ce.Seq != childSeq {
-					continue
-				}
-				for _, pe := range turn.Visible {
-					if pe.Type == ce.Type && string(pe.Payload) == string(ce.Payload) {
-						parentSeqs = append(parentSeqs, pe.Seq)
-						break
-					}
-				}
-			}
-		}
+		parentSeqs := winner.parentAffected
 		if len(parentSeqs) == 0 {
 			return r.append(ctx, turn.SessionID, turn.Turn, event.TypeContextVisibility, event.ContextVisibility{Reason: "healthier unchanged prune candidate", By: "intervention-race"})
 		}

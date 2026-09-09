@@ -10,6 +10,8 @@ import (
 )
 
 type Scenario struct {
+	ProtectedFiles  []string    `yaml:"protected_files" json:"protected_files"`
+	Grader          string      `yaml:"grader" json:"grader"`
 	Name            string      `yaml:"name" json:"name"`
 	Task            string      `yaml:"task" json:"task"`
 	WorkdirFixture  string      `yaml:"workdir_fixture" json:"workdir_fixture"`
@@ -34,11 +36,44 @@ func LoadScenario(path string) (Scenario, error) {
 	if err := yaml.Unmarshal(data, &scenario); err != nil {
 		return Scenario{}, fmt.Errorf("parse scenario: %w", err)
 	}
-	if scenario.Task == "" || scenario.WorkdirFixture == "" || scenario.MaxTurns < 1 || len(scenario.SuccessCommands) == 0 {
-		return Scenario{}, fmt.Errorf("scenario requires task, workdir_fixture, positive max_turns, and success_check")
+	if scenario.Task == "" || scenario.WorkdirFixture == "" || scenario.MaxTurns < 1 || (len(scenario.SuccessCommands) == 0 && scenario.Grader == "") {
+		return Scenario{}, fmt.Errorf("scenario requires task, workdir_fixture, positive max_turns, and success_check or grader")
 	}
 	if !filepath.IsAbs(scenario.WorkdirFixture) {
 		scenario.WorkdirFixture = filepath.Join(filepath.Dir(path), scenario.WorkdirFixture)
+	}
+	if scenario.Grader != "" {
+		if !filepath.IsAbs(scenario.Grader) {
+			scenario.Grader = filepath.Join(filepath.Dir(path), scenario.Grader)
+		}
+		var err error
+		scenario.Grader, err = filepath.Abs(scenario.Grader)
+		if err != nil {
+			return Scenario{}, err
+		}
+		if len(scenario.SuccessCommands) > 0 {
+			return Scenario{}, fmt.Errorf("choose grader or success_check, not both")
+		}
+		info, statErr := os.Stat(scenario.Grader)
+		if statErr != nil {
+			return Scenario{}, fmt.Errorf("grader: %w", statErr)
+		}
+		if !info.Mode().IsRegular() {
+			return Scenario{}, fmt.Errorf("grader must be a regular file")
+		}
+		fixture, absErr := filepath.Abs(scenario.WorkdirFixture)
+		if absErr != nil {
+			return Scenario{}, absErr
+		}
+		relative, relErr := filepath.Rel(fixture, scenario.Grader)
+		if relErr == nil && filepath.IsLocal(relative) {
+			return Scenario{}, fmt.Errorf("hidden grader must be outside workdir_fixture")
+		}
+	}
+	for _, name := range scenario.ProtectedFiles {
+		if !filepath.IsLocal(name) {
+			return Scenario{}, fmt.Errorf("protected file must be relative: %s", name)
+		}
 	}
 	for i := range scenario.Injections {
 		if scenario.Injections[i].Turn < 1 {

@@ -1,0 +1,6 @@
+name: invoice-clean
+task: Repair the invoice implementation and its caller to satisfy SPEC.md. Inspect the specification, implementation, caller and public tests before editing. Run public tests and add edge-case coverage. Do not change SPEC.md. Explain the final fix.
+workdir_fixture: ../fixtures/invoice
+grader: ../graders/invoice.py
+max_turns: 12
+protected_files: [SPEC.md]

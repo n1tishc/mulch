@@ -1,0 +1,271 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-09T05:49:18.948479+00:00",
+  "title": "Design System: Mulch",
+  "extensions": {
+    "colorMeta": {
+      "olive": {
+        "role": "primary",
+        "displayName": "Olive",
+        "tonalRamp": [
+          "oklch(15.00% 0.06546 129.40)",
+          "oklch(26.43% 0.06546 129.40)",
+          "oklch(37.86% 0.06546 129.40)",
+          "oklch(49.29% 0.06546 129.40)",
+          "oklch(60.71% 0.06546 129.40)",
+          "oklch(72.14% 0.06546 129.40)",
+          "oklch(83.57% 0.06546 129.40)",
+          "oklch(95.00% 0.06546 129.40)"
+        ]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "Warm paper",
+        "tonalRamp": [
+          "oklch(15.00% 0.00395 106.47)",
+          "oklch(26.43% 0.00395 106.47)",
+          "oklch(37.86% 0.00395 106.47)",
+          "oklch(49.29% 0.00395 106.47)",
+          "oklch(60.71% 0.00395 106.47)",
+          "oklch(72.14% 0.00395 106.47)",
+          "oklch(83.57% 0.00395 106.47)",
+          "oklch(95.00% 0.00395 106.47)"
+        ]
+      },
+      "panel": {
+        "role": "neutral",
+        "displayName": "Soft panel",
+        "tonalRamp": [
+          "oklch(15.00% 0.01065 112.37)",
+          "oklch(26.43% 0.01065 112.37)",
+          "oklch(37.86% 0.01065 112.37)",
+          "oklch(49.29% 0.01065 112.37)",
+          "oklch(60.71% 0.01065 112.37)",
+          "oklch(72.14% 0.01065 112.37)",
+          "oklch(83.57% 0.01065 112.37)",
+          "oklch(95.00% 0.01065 112.37)"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Fine sage line",
+        "tonalRamp": [
+          "oklch(15.00% 0.01622 114.40)",
+          "oklch(26.43% 0.01622 114.40)",
+          "oklch(37.86% 0.01622 114.40)",
+          "oklch(49.29% 0.01622 114.40)",
+          "oklch(60.71% 0.01622 114.40)",
+          "oklch(72.14% 0.01622 114.40)",
+          "oklch(83.57% 0.01622 114.40)",
+          "oklch(95.00% 0.01622 114.40)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Dark botanical ink",
+        "tonalRamp": [
+          "oklch(15.00% 0.01532 129.07)",
+          "oklch(26.43% 0.01532 129.07)",
+          "oklch(37.86% 0.01532 129.07)",
+          "oklch(49.29% 0.01532 129.07)",
+          "oklch(60.71% 0.01532 129.07)",
+          "oklch(72.14% 0.01532 129.07)",
+          "oklch(83.57% 0.01532 129.07)",
+          "oklch(95.00% 0.01532 129.07)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted gray olive",
+        "tonalRamp": [
+          "oklch(15.00% 0.02235 123.20)",
+          "oklch(26.43% 0.02235 123.20)",
+          "oklch(37.86% 0.02235 123.20)",
+          "oklch(49.29% 0.02235 123.20)",
+          "oklch(60.71% 0.02235 123.20)",
+          "oklch(72.14% 0.02235 123.20)",
+          "oklch(83.57% 0.02235 123.20)",
+          "oklch(95.00% 0.02235 123.20)"
+        ]
+      },
+      "tint": {
+        "role": "primary",
+        "displayName": "Pale olive tint",
+        "tonalRamp": [
+          "oklch(15.00% 0.02189 120.97)",
+          "oklch(26.43% 0.02189 120.97)",
+          "oklch(37.86% 0.02189 120.97)",
+          "oklch(49.29% 0.02189 120.97)",
+          "oklch(60.71% 0.02189 120.97)",
+          "oklch(72.14% 0.02189 120.97)",
+          "oklch(83.57% 0.02189 120.97)",
+          "oklch(95.00% 0.02189 120.97)"
+        ]
+      },
+      "danger": {
+        "role": "semantic",
+        "displayName": "Brick danger",
+        "tonalRamp": [
+          "oklch(15.00% 0.13248 30.66)",
+          "oklch(26.43% 0.13248 30.66)",
+          "oklch(37.86% 0.13248 30.66)",
+          "oklch(49.29% 0.13248 30.66)",
+          "oklch(60.71% 0.13248 30.66)",
+          "oklch(72.14% 0.13248 30.66)",
+          "oklch(83.57% 0.13248 30.66)",
+          "oklch(95.00% 0.13248 30.66)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "body": {
+        "displayName": "Conversation body",
+        "purpose": "Readable assistant and user prose."
+      },
+      "code": {
+        "displayName": "Evidence code",
+        "purpose": "Tool output and recorded evidence."
+      }
+    },
+    "shadows": [
+      {
+        "name": "composer",
+        "value": "0 3px 10px #303b1806",
+        "purpose": "Subtle composer enclosure."
+      },
+      {
+        "name": "latest",
+        "value": "0 3px 12px #0002",
+        "purpose": "Floating latest-message control."
+      },
+      {
+        "name": "dialog",
+        "value": "0 20px 70px #17200c26",
+        "purpose": "Structural modal elevation."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "inspector-drawer",
+        "value": "1199px"
+      },
+      {
+        "name": "session-drawer",
+        "value": "700px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Send message button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Implemented primary action treatment.",
+      "html": "<button class=\"ds-button-primary\">Send message</button>",
+      "css": ".ds-button-primary{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;font-size:13px;border:1px solid transparent;border-radius:7px;padding:9px 12px;color:var(--ink,#282c24);cursor:pointer;background:var(--olive,#4b5e36);color:white;}.ds-button-primary:hover:not(:disabled){background:#384a27;}.ds-button-primary:focus-visible{outline:2px solid var(--olive,#4b5e36);outline-offset:3px;}.ds-button-primary:disabled{opacity:.48;cursor:not-allowed;}"
+    },
+    {
+      "name": "Inspect button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Implemented secondary action treatment.",
+      "html": "<button class=\"ds-button-secondary\">Inspect</button>",
+      "css": ".ds-button-secondary{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;font-size:13px;border:1px solid transparent;border-radius:7px;padding:9px 12px;color:var(--ink,#282c24);cursor:pointer;background:var(--paper,#fafaf7);border-color:var(--line,#dfe1d5);}.ds-button-secondary:hover:not(:disabled){background:var(--tint,#e8eddd);}.ds-button-secondary:focus-visible{outline:2px solid var(--olive,#4b5e36);outline-offset:3px;}.ds-button-secondary:disabled{opacity:.48;cursor:not-allowed;}"
+    },
+    {
+      "name": "Copy button",
+      "kind": "button",
+      "refersTo": "button-quiet",
+      "description": "Implemented quiet action treatment.",
+      "html": "<button class=\"ds-button-quiet\">Copy</button>",
+      "css": ".ds-button-quiet{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;font-size:13px;border:1px solid transparent;border-radius:7px;padding:9px 12px;color:var(--ink,#282c24);cursor:pointer;background:transparent;color:var(--muted,#656a5c);padding:6px 9px;}.ds-button-quiet:hover:not(:disabled){background:var(--tint,#e8eddd);}.ds-button-quiet:focus-visible{outline:2px solid var(--olive,#4b5e36);outline-offset:3px;}.ds-button-quiet:disabled{opacity:.48;cursor:not-allowed;}"
+    },
+    {
+      "name": "Stop button",
+      "kind": "button",
+      "refersTo": "button-stop",
+      "description": "Implemented stop action treatment.",
+      "html": "<button class=\"ds-button-stop\">Stop</button>",
+      "css": ".ds-button-stop{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;font-size:13px;border:1px solid transparent;border-radius:7px;padding:9px 12px;color:var(--ink,#282c24);cursor:pointer;background:#f5e6df;color:var(--danger,#9d3c2e);}.ds-button-stop:hover:not(:disabled){background:var(--tint,#e8eddd);}.ds-button-stop:focus-visible{outline:2px solid var(--olive,#4b5e36);outline-offset:3px;}.ds-button-stop:disabled{opacity:.48;cursor:not-allowed;}"
+    },
+    {
+      "name": "Workspace field",
+      "kind": "input",
+      "refersTo": "field",
+      "description": "Labelled repository path field.",
+      "html": "<label class=\"ds-field\">Workspace<input value=\"/workspace/project\" /></label>",
+      "css": ".ds-field{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;display:flex;flex-direction:column;gap:8px;font-size:12px;color:var(--muted,#656a5c);}.ds-field input{font:12px ui-monospace,monospace;padding:11px;border:1px solid var(--line,#dfe1d5);border-radius:7px;background:var(--paper,#fafaf7);color:var(--ink,#282c24);}.ds-field input:focus-visible{outline:2px solid var(--olive,#4b5e36);outline-offset:3px;}"
+    },
+    {
+      "name": "Selected badge",
+      "kind": "chip",
+      "refersTo": "badge",
+      "description": "Noninteractive candidate selection marker.",
+      "html": "<span class=\"ds-badge\">Selected</span>",
+      "css": ".ds-badge{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;padding:3px 6px;border-radius:4px;background:var(--tint,#e8eddd);color:var(--ink,#282c24);font-size:10px;}"
+    },
+    {
+      "name": "Session navigation",
+      "kind": "nav",
+      "refersTo": "session-navigation",
+      "description": "Compact two-line session rows.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Conversations\"><button aria-current=\"true\">Current conversation<small>completed</small></button><button>Another conversation<small>running</small></button></nav>",
+      "css": ".ds-nav{background:var(--panel,#f0f1e9);padding:14px;}.ds-nav button{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;font-size:13px;border:1px solid transparent;border-radius:7px;padding:9px 12px;color:var(--ink,#282c24);cursor:pointer;display:flex;flex-direction:column;gap:7px;width:100%;text-align:left;font-size:12px;padding:12px 14px;background:transparent;}.ds-nav button[aria-current]{background:#e0e5d4;color:#344725;font-weight:600;}.ds-nav small{font-size:10px;color:var(--muted,#656a5c);font-weight:400;}.ds-nav button:hover{background:var(--tint,#e8eddd);}.ds-nav button:focus-visible{outline:2px solid var(--olive,#4b5e36);outline-offset:3px;}"
+    },
+    {
+      "name": "Tool disclosure",
+      "kind": "card",
+      "refersTo": "tool-container",
+      "description": "Native disclosure for tool evidence.",
+      "html": "<details class=\"ds-tool\"><summary>Read file <small>Completed</small></summary><p>Recorded tool output</p></details>",
+      "css": ".ds-tool{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;background:#f5f6f0;border:1px solid var(--line,#dfe1d5);border-radius:8px;color:var(--ink,#282c24);}.ds-tool summary{padding:13px 15px;cursor:pointer;font:12px ui-monospace,monospace;}.ds-tool summary small{font-size:10px;float:right;}.ds-tool p{padding:0 15px 15px;font-size:12px;}.ds-tool summary:focus-visible{outline:2px solid var(--olive,#4b5e36);outline-offset:3px;}"
+    },
+    {
+      "name": "Composer enclosure",
+      "kind": "input",
+      "refersTo": "composer",
+      "description": "Message field inside the persistent composer.",
+      "html": "<div class=\"ds-composer\"><textarea aria-label=\"Message\" placeholder=\"Ask Mulch to investigate, build, or fix something\u2026\"></textarea></div>",
+      "css": ".ds-composer{border:1px solid #bfc6ad;background:white;border-radius:12px;box-shadow:0 3px 10px #303b1806;padding:14px;}.ds-composer:focus-within{border-color:var(--olive,#4b5e36);}.ds-composer textarea{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;color:var(--ink,#282c24);border:0;background:transparent;resize:vertical;min-height:65px;max-height:220px;width:100%;font-size:13px;line-height:1.6;outline:none;}"
+    },
+    {
+      "name": "Repair notice",
+      "kind": "custom",
+      "refersTo": "repair-notice",
+      "description": "Conversation entry point into repair evidence.",
+      "html": "<button class=\"ds-repair\"><strong>Context repair</strong><span>Inspect recorded evidence</span><svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M4 12h16m-6-6 6 6-6 6\"/></svg></button>",
+      "css": ".ds-repair{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;font-size:13px;border:1px solid transparent;border-radius:7px;padding:9px 12px;color:var(--ink,#282c24);cursor:pointer;display:flex;gap:12px;align-items:baseline;width:100%;text-align:left;background:#ecf0e0;border:1px solid #cbd5b7;border-radius:0;padding:14px;font-size:12px;}.ds-repair svg{margin-left:auto;flex-shrink:0;}.ds-repair:hover{background:var(--tint,#e8eddd);}.ds-repair:focus-visible{outline:2px solid var(--olive,#4b5e36);outline-offset:3px;}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Mulch's established local workspace",
+    "overview": "Mulch inherits a warm neutral and olive identity: pale work surfaces, dark readable text, and restrained controls. The serif welcome and italic brand mark provide the established expressive detail; system sans-serif carries the operating interface.\n\nDepth comes mainly from surface tones and fine borders. Components remain compact, with open reading space around conversation text. This records the implemented workspace, without introducing a new metaphor, rebrand, or imagery.",
+    "keyCharacteristics": [
+      "Warm neutral surfaces with one olive action accent.",
+      "System interface text, serif welcome, monospace evidence.",
+      "Fine borders, gently rounded controls, restrained elevation."
+    ],
+    "rules": [
+      {
+        "name": "The Text With Color Rule",
+        "body": "Status and selection retain readable labels; color supplies reinforcement.",
+        "section": "colors"
+      },
+      {
+        "name": "The Structural Depth Rule",
+        "body": "Elevation distinguishes floating controls and modal surfaces from the reading plane.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do preserve the inherited neutral and olive identity.",
+      "Do use explicit text alongside color for status and selection.",
+      "Do retain visible keyboard focus and reduced-motion behavior."
+    ],
+    "donts": [
+      "Don't introduce a new brand or decorative imagery into this workspace.",
+      "Don't present missing evidence as a numeric zero.",
+      "Don't turn context health or candidate selection into a correctness grade."
+    ]
+  }
+}

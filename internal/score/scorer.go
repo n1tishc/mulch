@@ -2,6 +2,7 @@ package score
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"sync"
@@ -21,8 +22,9 @@ type Input struct {
 }
 
 type Result struct {
-	Score   float64
-	Details map[string]any
+	Freshness string
+	Score     float64
+	Details   map[string]any
 }
 
 type Scorer interface {
@@ -32,16 +34,18 @@ type Scorer interface {
 }
 
 type Partial struct {
+	Reason       string
 	Name         string
 	TimeoutMS    int64
 	UsedPrevious bool
 }
 
 type CompositeResult struct {
-	Scores   map[string]float64
-	Details  map[string]map[string]any
-	Partials []Partial
-	Latency  time.Duration
+	Freshness map[string]string
+	Scores    map[string]float64
+	Details   map[string]map[string]any
+	Partials  []Partial
+	Latency   time.Duration
 }
 
 type Composite struct {
@@ -95,14 +99,14 @@ func (c *Composite) Score(ctx context.Context, input Input) CompositeResult {
 			c.mu.Lock()
 			previous, ok := c.previous[s.Name()]
 			c.mu.Unlock()
-			partial := &Partial{Name: s.Name(), TimeoutMS: deadline.Milliseconds(), UsedPrevious: ok}
+			partial := &Partial{Name: s.Name(), TimeoutMS: deadline.Milliseconds(), UsedPrevious: ok, Reason: failureReason(err)}
 			if errors.Is(err, context.DeadlineExceeded) {
 				partial.TimeoutMS = deadline.Milliseconds()
 			}
 			outcomes <- outcome{name: s.Name(), result: Result{Score: previous}, partial: partial, available: ok}
 		}(scorer)
 	}
-	answer := CompositeResult{Scores: map[string]float64{}, Details: map[string]map[string]any{}}
+	answer := CompositeResult{Scores: map[string]float64{}, Details: map[string]map[string]any{}, Freshness: map[string]string{}}
 	for len(remaining) > 0 {
 		var completed outcome
 		select {
@@ -115,17 +119,32 @@ func (c *Composite) Score(ctx context.Context, input Input) CompositeResult {
 				if ok {
 					answer.Scores[name] = previous
 				}
-				answer.Partials = append(answer.Partials, Partial{Name: name, TimeoutMS: deadline.Milliseconds(), UsedPrevious: ok})
+				state := "unavailable"
+				if ok {
+					state = "reused"
+				}
+				answer.Freshness[name] = state
+				answer.Partials = append(answer.Partials, Partial{Name: name, TimeoutMS: deadline.Milliseconds(), UsedPrevious: ok, Reason: failureReason(ctx.Err())})
 			}
 			c.mu.Unlock()
 			clear(remaining)
 			continue
 		}
 		if completed.available {
+			state := completed.result.Freshness
+			if state == "" {
+				state = "fresh"
+			}
+			answer.Freshness[completed.name] = state
 			answer.Scores[completed.name] = completed.result.Score
 			answer.Details[completed.name] = completed.result.Details
 		}
 		if completed.partial != nil {
+			state := "unavailable"
+			if completed.partial.UsedPrevious {
+				state = "reused"
+			}
+			answer.Freshness[completed.name] = state
 			answer.Partials = append(answer.Partials, *completed.partial)
 		}
 	}
@@ -137,4 +156,19 @@ func (c *Composite) Score(ctx context.Context, input Input) CompositeResult {
 	}
 	c.mu.Unlock()
 	return answer
+}
+
+func failureReason(err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "cancelled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	var syntax *json.SyntaxError
+	var mismatch *json.UnmarshalTypeError
+	if errors.As(err, &syntax) || errors.As(err, &mismatch) {
+		return "invalid_response"
+	}
+	return "scorer_error"
 }

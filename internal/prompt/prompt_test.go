@@ -62,3 +62,24 @@ func TestSystemOverrideReplacesDefault(t *testing.T) {
 		t.Fatalf("sources = %#v", assembled.Sources)
 	}
 }
+
+func TestLocalPromptExcludesAncestorInstructions(t *testing.T) {
+	root := t.TempDir()
+	wd := filepath.Join(root, "fixture")
+	if err := os.Mkdir(wd, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("PRIVATE_PARENT_SENTINEL"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wd, "AGENTS.md"), []byte("LOCAL_FIXTURE_SENTINEL"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	assembled, err := prompt.AssembleLocal(wd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(assembled.Text, "PRIVATE_PARENT_SENTINEL") || !strings.Contains(assembled.Text, "LOCAL_FIXTURE_SENTINEL") {
+		t.Fatalf("prompt=%s", assembled.Text)
+	}
+}

@@ -23,7 +23,12 @@ type Assembled struct {
 	Sources []Source
 }
 
-func Assemble(workdir, home string) (Assembled, error) {
+func Assemble(workdir, home string) (Assembled, error) { return assemble(workdir, home, true) }
+
+// AssembleLocal makes benchmark prompts independent of personal/ancestor instructions.
+func AssembleLocal(workdir string) (Assembled, error) { return assemble(workdir, "", false) }
+
+func assemble(workdir, home string, inherit bool) (Assembled, error) {
 	cwd, err := filepath.Abs(workdir)
 	if err != nil {
 		return Assembled{}, fmt.Errorf("resolve workdir: %w", err)
@@ -38,16 +43,19 @@ func Assemble(workdir, home string) (Assembled, error) {
 		return Assembled{}, readErr
 	}
 
-	paths := []string{filepath.Join(home, ".mulch", "agent", "AGENTS.md")}
-	var ancestors []string
-	for dir := cwd; ; dir = filepath.Dir(dir) {
-		ancestors = append(ancestors, filepath.Join(dir, "AGENTS.md"))
-		if filepath.Dir(dir) == dir {
-			break
+	paths := []string{filepath.Join(cwd, "AGENTS.md")}
+	if inherit {
+		paths = []string{filepath.Join(home, ".mulch", "agent", "AGENTS.md")}
+		var ancestors []string
+		for dir := cwd; ; dir = filepath.Dir(dir) {
+			ancestors = append(ancestors, filepath.Join(dir, "AGENTS.md"))
+			if filepath.Dir(dir) == dir {
+				break
+			}
 		}
-	}
-	for i := len(ancestors) - 1; i >= 0; i-- {
-		paths = append(paths, ancestors[i])
+		for i := len(ancestors) - 1; i >= 0; i-- {
+			paths = append(paths, ancestors[i])
+		}
 	}
 	seen := map[string]bool{}
 	for _, path := range paths {

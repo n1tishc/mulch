@@ -15,6 +15,8 @@ import (
 	"github.com/n1tishc/mulch/internal/tool"
 )
 
+var ErrMaxTurns = errors.New("maximum turns reached")
+
 type Store interface {
 	CreateSession(context.Context, event.Session) error
 	Append(context.Context, event.Event) (event.Event, error)
@@ -28,6 +30,7 @@ type resumableStore interface {
 	ResumeSession(context.Context, string) error
 }
 type Dependencies struct {
+	IsolatedPrompt bool
 	Store          Store
 	LLM            provider.LLM
 	Tools          *tool.Executor
@@ -91,7 +94,12 @@ func RunSession(ctx context.Context, deps Dependencies, id, task string, emit fu
 		return fail(err, 0, 0, 0)
 	}
 	home, _ := os.UserHomeDir()
-	assembled, err := prompt.Assemble(deps.Workdir, home)
+	var assembled prompt.Assembled
+	if deps.IsolatedPrompt {
+		assembled, err = prompt.AssembleLocal(deps.Workdir)
+	} else {
+		assembled, err = prompt.Assemble(deps.Workdir, home)
+	}
 	if err != nil {
 		return fail(err, 0, 0, 0)
 	}
@@ -326,7 +334,7 @@ func continueSession(ctx context.Context, deps Dependencies, id string, started 
 			return fail(err, turn, totalInput, totalOutput)
 		}
 	}
-	return fail(fmt.Errorf("maximum turns (%d) reached", deps.MaxTurns), lastTurn, totalInput, totalOutput)
+	return fail(fmt.Errorf("%w (%d)", ErrMaxTurns, deps.MaxTurns), lastTurn, totalInput, totalOutput)
 }
 
 func waitForHooks(hooks []hook.Hook) {

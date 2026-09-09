@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/n1tishc/mulch/internal/event"
@@ -59,6 +60,48 @@ func TestLadderRoutesLowCoherenceToReanchor(t *testing.T) {
 	if store.lastType != event.TypeInterveneFire || store.inject == "" {
 		t.Fatalf("type=%s inject=%q", store.lastType, store.inject)
 	}
+}
+
+// A newer asynchronous score arriving during the mutation must not become the
+// recorded cause of a decision already made from the preceding score.
+func TestRepairRecordsSelectedScoreAndExactMutation(t *testing.T) {
+	store := &causalStore{}
+	ladder := intervene.New(store, intervene.Policy{ConfirmTurns: 1}).WithSession("s")
+	low := .1
+	selected := health(t, 7, 30, nil, &low, nil)
+	selected.Seq = 20
+	newer := health(t, 8, 90, nil, &low, nil)
+	newer.Seq = 22
+	store.publish = func(e event.Event) {
+		ladder.OnEvent(t.Context(), e)
+		if e.Type == event.TypeContextInject {
+			ladder.OnEvent(t.Context(), newer)
+		}
+	}
+	ladder.OnEvent(t.Context(), selected)
+	if err := ladder.BeforeTools(t.Context(), &hook.Turn{SessionID: "s", Turn: 8, Visible: visibleHistory(t)}); err != nil {
+		t.Fatal(err)
+	}
+	if store.lastFire.ScoreSeq != 20 || store.lastFire.ContextSeq != 21 || store.lastFire.TurnScored != 7 {
+		t.Fatalf("wrong causal evidence: %#v", store.lastFire)
+	}
+}
+
+type causalStore struct {
+	memoryStore
+	publish func(event.Event)
+}
+
+func (s *causalStore) Append(ctx context.Context, e event.Event) (event.Event, error) {
+	e.Seq = 21
+	if e.Type == event.TypeInterveneFire {
+		e.Seq = 23
+	}
+	recorded, err := s.memoryStore.Append(ctx, e)
+	if s.publish != nil {
+		s.publish(recorded)
+	}
+	return recorded, err
 }
 
 func TestLadderCompactsOldSaturatedHistoryWithoutDeletingIt(t *testing.T) {
@@ -308,4 +351,55 @@ func text(t *testing.T, seq int64, turn int, typ event.Type, p any) event.Event 
 	t.Helper()
 	b, _ := json.Marshal(p)
 	return event.Event{Seq: seq, Turn: turn, Type: typ, Payload: b, Visible: true}
+}
+
+func TestRaceCannotReplaceCriticalEscalation(t *testing.T) {
+	store := newRaceStore()
+	policy := intervene.DefaultPolicy()
+	policy.ConfirmTurns = 1
+	var ran atomic.Bool
+	race := intervene.NewRace(store, policy, func(context.Context, event.Session, intervene.Action) (event.ScoreHealth, error) {
+		ran.Store(true)
+		return event.ScoreHealth{Composite: 90}, nil
+	})
+	ladder := intervene.NewConfigured(store, policy).WithRace(race)
+	ladder.OnEvent(t.Context(), healthScores(t, 3, 20, nil, nil, nil, nil))
+	cancelled := false
+	turn := &hook.Turn{SessionID: "parent", Turn: 4, Visible: store.visible["parent"], ToolCalls: []provider.Block{{Type: "tool_use"}}, Cancel: func(string) { cancelled = true }}
+	if err := ladder.BeforeTools(t.Context(), turn); err != nil {
+		t.Fatal(err)
+	}
+	if ran.Load() || !cancelled || len(turn.ToolCalls) != 0 {
+		t.Fatalf("candidate ran=%v cancelled=%v pending=%d", ran.Load(), cancelled, len(turn.ToolCalls))
+	}
+}
+
+func TestLadderHonorsLongConfirmationWindow(t *testing.T) {
+	store := &memoryStore{}
+	policy := intervene.DefaultPolicy()
+	policy.ConfirmTurns = 4
+	ladder := intervene.NewConfigured(store, policy)
+	for turn := 1; turn <= 4; turn++ {
+		ladder.OnEvent(t.Context(), healthScores(t, turn, 70, nil, nil, nil, nil))
+	}
+	if err := ladder.BeforeTools(t.Context(), &hook.Turn{SessionID: "s", Turn: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if store.lastType != event.TypeInterveneFire {
+		t.Fatalf("four confirming observations produced %s", store.lastType)
+	}
+}
+
+func TestLadderDoesNotCountDuplicateObservations(t *testing.T) {
+	store := &memoryStore{}
+	ladder := intervene.New(store, intervene.Policy{})
+	for range 2 {
+		ladder.OnEvent(t.Context(), healthScores(t, 3, 70, nil, nil, nil, nil))
+	}
+	if err := ladder.BeforeTools(t.Context(), &hook.Turn{SessionID: "s", Turn: 4}); err != nil {
+		t.Fatal(err)
+	}
+	if store.lastType != event.TypeInterveneSkip {
+		t.Fatalf("duplicate observation produced %s", store.lastType)
+	}
 }

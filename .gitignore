@@ -10,3 +10,5 @@ dist/
 ui/node_modules/
 ui/dist/
 ui/*.tsbuildinfo
+ui/test-results/
+ui/playwright-report/

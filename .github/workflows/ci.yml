@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
@@ -30,6 +31,15 @@ jobs:
         run: make arch
       - name: Frontend install and build
         run: make ui
+      - name: Browser acceptance (deterministic provider)
+        working-directory: ui
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:e2e
+      - name: Context repair contract
+        run: make contract
+      - name: Correctness benchmark contract (offline)
+        run: make correctness-test
       - name: Go vet
         run: go vet ./...
       - name: Race tests
@@ -37,6 +47,22 @@ jobs:
       - uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8
         with:
           version: v2.4.0
+
+  distribution:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24.8.0
+      - run: npm install --global pnpm@11.22.0
+      - run: make distribution-test
 
   release-dry-run:
     runs-on: ubuntu-24.04
@@ -57,3 +83,10 @@ jobs:
           distribution: goreleaser
           version: v2.12.3
           args: release --snapshot --clean
+      - name: Stage all npm platforms from release archives
+        run: |
+          VERSION=$(node -p "require('./dist/metadata.json').version")
+          node scripts/package-npm.mjs "$VERSION"
+          for package in dist/npm/*; do
+            (cd "$package" && npm pack --ignore-scripts)
+          done

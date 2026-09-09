@@ -203,3 +203,27 @@ func eventTypes(es []event.Event) []event.Type {
 	}
 	return out
 }
+
+func TestRaceTiesFavorPrune(t *testing.T) {
+	for range 20 {
+		store := newRaceStore()
+		race := intervene.NewRace(store, intervene.DefaultPolicy(), func(context.Context, event.Session, intervene.Action) (event.ScoreHealth, error) {
+			return event.ScoreHealth{Composite: 80}, nil
+		})
+		if _, err := race.Compete(t.Context(), &hook.Turn{SessionID: "parent", Turn: 4, Visible: store.visible["parent"]}, raceHealth()); err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range store.events["parent"] {
+			if e.Type != event.TypeRaceEnd {
+				continue
+			}
+			var ended event.RaceEnd
+			if err := e.Decode(&ended); err != nil {
+				t.Fatal(err)
+			}
+			if ended.Winner != "prune" {
+				t.Fatalf("tied race winner = %s", ended.Winner)
+			}
+		}
+	}
+}

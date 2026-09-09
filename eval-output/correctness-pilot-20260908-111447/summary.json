@@ -1,0 +1,60 @@
+{
+  "runs": 16,
+  "correct": 3,
+  "grader_passed": 14,
+  "races": 0,
+  "actions": {},
+  "by_mode": {
+    "plain": {
+      "runs": 4,
+      "correct": 3,
+      "grader_passed": 4
+    },
+    "control": {
+      "runs": 4,
+      "correct": 0,
+      "grader_passed": 3
+    },
+    "intervention": {
+      "runs": 4,
+      "correct": 0,
+      "grader_passed": 3
+    },
+    "race": {
+      "runs": 4,
+      "correct": 0,
+      "grader_passed": 4
+    }
+  },
+  "usage_by_role": {
+    "agent": {
+      "calls": 112,
+      "input_tokens": 149973,
+      "output_tokens": 41010,
+      "failed_calls": 0,
+      "reserved_tokens": 190983
+    },
+    "judge": {
+      "calls": 30,
+      "input_tokens": 11253,
+      "output_tokens": 5441,
+      "failed_calls": 24,
+      "reserved_tokens": 218834
+    }
+  },
+  "provider_usage": {
+    "calls": 142,
+    "input_tokens": 161226,
+    "output_tokens": 46451,
+    "failed_calls": 24,
+    "reserved_tokens": 409817
+  },
+  "execution_failures": {
+    "evaluation token budget exhausted": 12,
+    "grader rejected output": 1
+  },
+  "partial_scores": {
+    "coherence": 30
+  },
+  "conservative_spend_upper_usd": 4.09817
+}

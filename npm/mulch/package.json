@@ -1,0 +1,18 @@
+{
+  "name": "@n1tishc/mulch",
+  "version": "0.1.0",
+  "description": "An event-sourced agent harness with auditable context repair",
+  "bin": { "mulch": "bin/mulch.cjs" },
+  "files": ["bin", "README.md"],
+  "engines": { "node": ">=22" },
+  "repository": { "type": "git", "url": "git+https://github.com/n1tishc/mulch.git", "directory": "npm/mulch" },
+  "publishConfig": { "access": "public" },
+  "optionalDependencies": {
+    "@n1tishc/mulch-darwin-arm64": "0.1.0",
+    "@n1tishc/mulch-darwin-x64": "0.1.0",
+    "@n1tishc/mulch-linux-arm64": "0.1.0",
+    "@n1tishc/mulch-linux-x64": "0.1.0",
+    "@n1tishc/mulch-win32-arm64": "0.1.0",
+    "@n1tishc/mulch-win32-x64": "0.1.0"
+  }
+}

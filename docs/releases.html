@@ -1,0 +1,41 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Distribution and releases · Mulch</title><style>
+  :root { color-scheme: light dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+  body { max-width: 900px; margin: 0 auto; padding: 3rem 1.5rem 5rem; line-height: 1.6; color: #202124; background: #fff; }
+  h1, h2, h3 { line-height: 1.2; margin-top: 2.25rem; } h1 { font-size: 2.3rem; } h2 { border-bottom: 1px solid #d0d7de; padding-bottom: .35rem; }
+  a { color: #0969da; } code { padding: .12rem .32rem; border-radius: .3rem; background: #eef1f4; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  pre { overflow: auto; padding: 1rem; border-radius: .5rem; background: #f6f8fa; } pre code { padding: 0; background: none; }
+  table { width: 100%; border-collapse: collapse; display: block; overflow-x: auto; } th, td { border: 1px solid #d0d7de; padding: .55rem .7rem; text-align: left; vertical-align: top; } th { background: #f6f8fa; }
+  li + li { margin-top: .3rem; } hr { border: 0; border-top: 1px solid #d0d7de; margin: 2rem 0; }
+  @media (prefers-color-scheme: dark) { body { color: #e6edf3; background: #0d1117; } a { color: #58a6ff; } h2, th, td { border-color: #30363d; } code, pre, th { background: #161b22; } }
+</style></head><body><main><h1 id="distribution-and-releases">Distribution and releases</h1>
+<p>Mulch has one native implementation and one version per release. GoReleaser builds Linux, macOS, and Windows for amd64 and arm64. Archives have the explicit name <code>mulch_VERSION_GOOS_GOARCH.tar.gz</code> (Windows uses <code>.zip</code>). <code>checksums.txt</code> covers the archives. The curl installer is attached as <code>install.sh</code>.</p>
+<p>The npm entry package is <code>@n1tishc/mulch</code>. Six optional packages contain the corresponding native binaries with <code>os</code> and <code>cpu</code> constraints. Their exact versions match the entry package. The wrapper forwards arguments, standard streams, exit codes, and termination signals. There is no postinstall script, download on first run, or local compilation. Keep optional dependencies enabled. Node 22 or later is required for the wrapper; the curl-installed executable does not require Node.</p>
+<p>This follows npm's <a href="https://docs.npmjs.com/files/package.json/">bin, os, cpu, and optionalDependencies conventions</a> and avoids dependence on pnpm's <a href="https://pnpm.io/settings#onlybuiltdependencies">build-script approval policy</a>. Archive names are explicitly configured using <a href="https://goreleaser.com/customization/archive/">GoReleaser archive templates</a>.</p>
+<h2 id="local-verification">Local verification</h2>
+<pre><code class="language-sh">make verify
+make distribution-test
+make release-dry
+VERSION=$(node -p &quot;require('./dist/metadata.json').version&quot;)
+node scripts/package-npm.mjs &quot;$VERSION&quot;</code></pre>
+<p>Distribution tests require npm, pnpm, tar, and zip/unzip on macOS or Linux. They package a real host binary, install packed tarballs offline with npm and pnpm with lifecycle scripts disabled, exercise command success and failure, install to a path containing spaces, and verify that checksum rejection preserves an existing binary. Non-host archives in that test use the host executable as a packaging fixture; they are not cross-platform execution tests. CI separately builds and stages all six real GoReleaser targets. Windows execution still needs a native Windows smoke test.</p>
+<h2 id="prepare-a-release">Prepare a release</h2>
+<ol><li>Set <code>npm/mulch/package.json</code>'s version and all six optional dependency versions to the intended SemVer. Commit the change and create the matching <code>vVERSION</code> tag when ready.</li><li>Run <code>gh workflow run release.yml --ref vVERSION</code>. The workflow invokes CI for that ref, checks the tag against the entry package, builds a <strong>draft</strong> GitHub release, verifies archive checksums while staging npm packages, and attaches seven npm tarballs to the draft. Branch runs do not create releases.</li><li>Inspect the archives, checksums, installer, and npm tarballs. <code>scripts/package-npm.mjs</code> never publishes; it can be rerun against the same release artifacts. Release staging happens on macOS/Linux because it uses tar and unzip.</li><li>Before first npm publication, confirm that the npm account owns the <code>@n1tishc</code> scope. The GitHub username does not establish npm ownership. Authenticate to npm using an authorized account.</li><li>Publish the six native tarballs first, then the entry package. For locally staged artifacts:</li></ol>
+<pre><code class="language-sh">for package in dist/npm/*; do
+  (cd &quot;$package&quot; &amp;&amp; npm pack --ignore-scripts)
+done
+for package in dist/npm/darwin-* dist/npm/linux-* dist/npm/win32-*; do
+  npm publish &quot;$package&quot;/*.tgz --access public
+done
+npm publish dist/npm/mulch/*.tgz --access public</code></pre>
+<ol><li>Publish the reviewed GitHub draft. Verify installation from both public distribution channels before announcing the release. A GitHub draft is not available to the public curl installer.</li></ol>
+<p>Registry publication and publishing the GitHub draft are explicit maintainer actions. No registry release or tag is created by local verification. Existing npm versions are immutable; resolve a partial publication by publishing the missing packages at the same version, without changing already-published contents.</p>
+<h2 id="user-commands-after-publication">User commands after publication</h2>
+<pre><code class="language-sh">curl -fsSL https://github.com/n1tishc/mulch/releases/latest/download/install.sh | sh
+# Pin both the installer and binary version:
+curl -fsSL https://github.com/n1tishc/mulch/releases/download/v0.1.0/install.sh | sh -s -- v0.1.0
+pnpm add -g @n1tishc/mulch@0.1.0
+# Or install into a project:
+pnpm add -D @n1tishc/mulch@0.1.0
+pnpm exec mulch version</code></pre>
+<p>The curl default is <code>$HOME/.local/bin</code>; set <code>MULCH_INSTALL_DIR</code> to override it. No sudo or shell-profile changes are made. Version selection accepts an argument or <code>MULCH_VERSION</code>, otherwise resolves the latest release. A missing release or checksum mismatch fails before replacing the installed executable. Checksums verify download integrity against GitHub release metadata; they are not independent artifact signatures.</p>
+<p>Linux Bash execution additionally requires Bubblewrap and a host configuration permitting its sandbox. Windows supports session/replay/viewer operations but does not yet support the agent Bash tool. These requirements do not affect <code>mulch version</code> or package installation.</p></main></body></html>

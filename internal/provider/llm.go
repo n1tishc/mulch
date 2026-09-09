@@ -27,6 +27,8 @@ type Message struct {
 }
 
 type Request struct {
+	SessionID string
+	NoRetry   bool
 	Messages  []Message
 	Tools     []ToolSpec
 	MaxTokens int
@@ -48,4 +50,17 @@ type Response struct {
 
 type LLM interface {
 	Stream(context.Context, Request, chan<- Delta) (Response, error)
+}
+
+// WithSession supplies identity for both primary and auxiliary model calls.
+func WithSession(llm LLM, id string) LLM { return sessionLLM{llm, id} }
+
+type sessionLLM struct {
+	LLM
+	id string
+}
+
+func (s sessionLLM) Stream(ctx context.Context, req Request, out chan<- Delta) (Response, error) {
+	req.SessionID = s.id
+	return s.LLM.Stream(ctx, req, out)
 }

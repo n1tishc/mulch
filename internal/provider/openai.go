@@ -63,7 +63,14 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Delta) (Res
 	if req.MaxTokens > 0 {
 		params.MaxCompletionTokens = openai.Int(int64(req.MaxTokens))
 	}
-	stream := o.client.Chat.Completions.NewStreaming(ctx, params)
+	requestOptions := []option.RequestOption{option.WithHeader("User-Agent", "mulch/0.1")}
+	if req.SessionID != "" {
+		requestOptions = append(requestOptions, option.WithHeader("x-opencode-session", req.SessionID))
+	}
+	if req.NoRetry {
+		requestOptions = append(requestOptions, option.WithMaxRetries(0))
+	}
+	stream := o.client.Chat.Completions.NewStreaming(ctx, params, requestOptions...)
 	defer func() { _ = stream.Close() }()
 	acc := openai.ChatCompletionAccumulator{}
 	for stream.Next() {

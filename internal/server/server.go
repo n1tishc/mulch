@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -31,8 +32,9 @@ type Store interface {
 }
 
 type StartRequest struct {
-	Task string `json:"task"`
-	Opts struct {
+	RequestID string `json:"request_id,omitempty"`
+	Task      string `json:"task"`
+	Opts      struct {
 		Workdir string `json:"workdir"`
 	} `json:"opts"`
 }
@@ -67,6 +69,7 @@ type SessionSummary struct {
 }
 
 type Server struct {
+	config  Config
 	store   Store
 	control Control
 	handler http.Handler
@@ -79,6 +82,10 @@ func New(store Store, controls ...Control) *Server {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/sessions", s.sessions)
+	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.config, nil) })
+	mux.HandleFunc("GET /api/sessions/{id}", s.sessionDetail)
+	mux.HandleFunc("POST /api/sessions/{id}/resume", s.resume)
+	mux.HandleFunc("PATCH /api/sessions/{id}", s.rename)
 	mux.HandleFunc("GET /api/sessions/{id}/events", s.events)
 	mux.HandleFunc("GET /api/sessions/{id}/tree", s.tree)
 	mux.HandleFunc("POST /api/sessions", s.start)
@@ -92,7 +99,7 @@ func New(store Store, controls ...Control) *Server {
 		panic(err)
 	}
 	mux.Handle("/", spa(http.FileServer(http.FS(assets)), assets))
-	s.handler = mux
+	s.handler = sameOrigin(mux)
 	return s
 }
 
@@ -108,8 +115,10 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "task is required", http.StatusBadRequest)
 		return
 	}
-	id, err := s.control.Start(r.Context(), request)
-	writeAccepted(w, SessionResponse{ID: id}, err)
+	if request.Opts.Workdir == "" {
+		request.Opts.Workdir = s.config.Workspace
+	}
+	s.mutate(w, r, request.RequestID, request, func(ctx context.Context) (string, error) { return s.control.Start(ctx, request) })
 }
 
 func (s *Server) steer(w http.ResponseWriter, r *http.Request) {
@@ -216,7 +225,8 @@ func (s *Server) sessionStream(w http.ResponseWriter, r *http.Request) {
 		}
 		last = item.Seq
 	}
-	if live == nil {
+	follow := r.URL.Query().Get("follow") == "1"
+	if live == nil && !follow {
 		_ = conn.Close(websocket.StatusNormalClosure, "history complete")
 		return
 	}
@@ -237,6 +247,7 @@ func (s *Server) sessionStream(w http.ResponseWriter, r *http.Request) {
 	}
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	streamCtx := conn.CloseRead(r.Context())
 	for {
 		select {
 		case _, ok := <-live:
@@ -244,11 +255,15 @@ func (s *Server) sessionStream(w http.ResponseWriter, r *http.Request) {
 			if flushErr != nil {
 				return
 			}
-			if ended {
+			if ended && !follow {
 				_ = conn.Close(websocket.StatusNormalClosure, "session complete")
 				return
 			}
 			if !ok {
+				if follow {
+					live = nil
+					continue
+				}
 				_ = conn.Close(websocket.StatusNormalClosure, "subscription closed")
 				return
 			}
@@ -257,11 +272,11 @@ func (s *Server) sessionStream(w http.ResponseWriter, r *http.Request) {
 			if flushErr != nil {
 				return
 			}
-			if ended {
+			if ended && !follow {
 				_ = conn.Close(websocket.StatusNormalClosure, "session complete")
 				return
 			}
-		case <-r.Context().Done():
+		case <-streamCtx.Done():
 			return
 		}
 	}
@@ -270,9 +285,17 @@ func (s *Server) sessionStream(w http.ResponseWriter, r *http.Request) {
 func (s *Server) Handler() http.Handler { return s.handler }
 
 func (s *Server) Serve(ctx context.Context, address string) error {
-	httpServer := &http.Server{Addr: address, Handler: s.handler, ReadHeaderTimeout: 5 * time.Second}
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return err
+	}
+	return s.ServeListener(ctx, listener)
+}
+
+func (s *Server) ServeListener(ctx context.Context, listener net.Listener) error {
+	httpServer := &http.Server{Handler: s.handler, ReadHeaderTimeout: 5 * time.Second, BaseContext: func(net.Listener) context.Context { return ctx }}
 	done := make(chan error, 1)
-	go func() { done <- httpServer.ListenAndServe() }()
+	go func() { done <- httpServer.Serve(listener) }()
 	select {
 	case err := <-done:
 		if errors.Is(err, http.ErrServerClosed) {

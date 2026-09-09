@@ -1,0 +1,3 @@
+export type IconName="menu"|"close"|"add"|"up"|"right"|"down"|"chevron"|"diagonal"|"return";
+const paths:Record<IconName,string>={menu:"M4 6h16M4 12h16M4 18h16",close:"m6 6 12 12M18 6 6 18",add:"M12 4v16M4 12h16",up:"M12 20V4m-6 6 6-6 6 6",right:"M4 12h16m-6-6 6 6-6 6",down:"m6 9 6 6 6-6",chevron:"m9 6 6 6-6 6",diagonal:"M5 19 19 5M7 5h12v12",return:"M20 5v8H4m5-5-5 5 5 5"};
+export function Icon({name}:{name:IconName}){return <svg className="icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d={paths[name]}/></svg>;}

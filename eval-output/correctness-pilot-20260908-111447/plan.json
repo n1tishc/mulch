@@ -1,0 +1,15 @@
+{
+  "model": "glm-5.3-flash",
+  "runs_per_mode_per_scenario": 1,
+  "modes": [
+    "plain",
+    "control",
+    "intervention",
+    "race"
+  ],
+  "token_budget_per_run": 40000,
+  "maximum_runs": 16,
+  "conservative_spend_envelope_usd": 6.4,
+  "authorized_cap_usd": 10,
+  "purpose": "diagnostic pilot, not superiority evidence"
+}

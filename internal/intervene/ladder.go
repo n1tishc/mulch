@@ -33,7 +33,10 @@ type Store interface {
 	Append(context.Context, event.Event) (event.Event, error)
 	SetVisibleBecause(context.Context, string, []int64, bool, string, string) error
 }
-type healthRecord struct{ health event.ScoreHealth }
+type healthRecord struct {
+	health event.ScoreHealth
+	seq    int64
+}
 type CoherenceRequester interface{ Request() }
 type Summarizer interface {
 	Summarize(context.Context, []event.Event) (summary string, tokens int, err error)
@@ -50,6 +53,8 @@ const (
 )
 
 type Ladder struct {
+	contextSeq  int64
+	scoreSeq    int64
 	store       Store
 	policy      Policy
 	mu          sync.Mutex
@@ -115,6 +120,12 @@ func (l *Ladder) OnEvent(_ context.Context, candidate event.Event) {
 	if l.sessionID != "" && candidate.SessionID != l.sessionID {
 		return
 	}
+	if candidate.Type == event.TypeContextVisibility || candidate.Type == event.TypeContextInject || candidate.Type == event.TypeContextCompact {
+		l.mu.Lock()
+		l.contextSeq = candidate.Seq
+		l.mu.Unlock()
+		return
+	}
 	if candidate.Type == event.TypeInterveneFire {
 		var fired event.InterveneFire
 		if candidate.Decode(&fired) == nil {
@@ -134,9 +145,15 @@ func (l *Ladder) OnEvent(_ context.Context, candidate event.Event) {
 		return
 	}
 	l.mu.Lock()
-	l.history = append(l.history, healthRecord{health})
-	if len(l.history) > 3 {
-		l.history = l.history[len(l.history)-3:]
+	// A repeated or late observation is not independent confirmation.
+	if len(l.history) > 0 && health.TurnScored <= l.history[len(l.history)-1].health.TurnScored {
+		l.mu.Unlock()
+		return
+	}
+	l.history = append(l.history, healthRecord{health: health, seq: candidate.Seq})
+	keep := max(1, l.policy.ConfirmTurns)
+	if len(l.history) > keep {
+		l.history = l.history[len(l.history)-keep:]
 	}
 	l.mu.Unlock()
 }
@@ -185,7 +202,11 @@ func (l *Ladder) BeforeTools(ctx context.Context, turn *hook.Turn) error {
 		}
 	}
 	action, reason := l.route(latest)
-	if l.race != nil && action != ActionWarn {
+	l.mu.Lock()
+	l.contextSeq = 0
+	l.scoreSeq = history[len(history)-1].seq
+	l.mu.Unlock()
+	if l.race != nil && (action == ActionPrune || action == ActionCompact || action == ActionReanchor) {
 		raced, raceErr := l.race.Compete(ctx, turn, latest)
 		if raceErr != nil {
 			return fmt.Errorf("race interventions: %w", raceErr)
@@ -440,6 +461,12 @@ func (l *Ladder) skip(ctx context.Context, turn *hook.Turn, scored int, reason s
 	return l.append(ctx, turn, event.TypeInterveneSkip, event.InterveneSkip{Reason: reason, TurnScored: scored, BeforeTurn: turn.Turn})
 }
 func (l *Ladder) append(ctx context.Context, turn *hook.Turn, typ event.Type, payload any) error {
+	if fire, ok := payload.(event.InterveneFire); ok {
+		l.mu.Lock()
+		fire.ContextSeq, fire.ScoreSeq = l.contextSeq, l.scoreSeq
+		l.mu.Unlock()
+		payload = fire
+	}
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return err

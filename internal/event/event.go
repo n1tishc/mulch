@@ -20,6 +20,7 @@ type Type string
 
 const (
 	TypeSessionStart      Type = "session.start"
+	TypeRunConfig         Type = "run.config"
 	TypeSystemPrompt      Type = "system.prompt"
 	TypeUserMessage       Type = "user.message"
 	TypeLLMRequest        Type = "llm.request"
@@ -172,6 +173,7 @@ type ContextCompact struct {
 }
 type TurnCompleted struct{}
 type ScoreHealth struct {
+	Freshness      map[string]string         `json:"freshness,omitempty"`
 	TurnScored     int                       `json:"turn_scored"`
 	Composite      float64                   `json:"composite"`
 	Saturation     *float64                  `json:"saturation,omitempty"`
@@ -183,11 +185,14 @@ type ScoreHealth struct {
 	OnCriticalPath bool                      `json:"on_critical_path"`
 }
 type ScorePartial struct {
+	Reason       string `json:"reason,omitempty"`
 	Name         string `json:"name"`
 	TimeoutMS    int64  `json:"timeout_ms"`
 	UsedPrevious bool   `json:"used_previous"`
 }
 type InterveneFire struct {
+	ContextSeq        int64   `json:"context_seq,omitempty"`
+	ScoreSeq          int64   `json:"score_seq,omitempty"`
 	Action            string  `json:"action"`
 	Reason            string  `json:"reason"`
 	TurnScored        int     `json:"turn_scored"`

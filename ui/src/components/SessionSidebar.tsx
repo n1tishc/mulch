@@ -1,0 +1,8 @@
+import { useState } from "react";
+import { Icon } from "./Icon.tsx";
+import type { WebSession } from "../api/client.ts";
+export function SessionSidebar({sessions,selected,onSelect,onNew}:{sessions:WebSession[];selected:string;onSelect:(id:string)=>void;onNew:()=>void}) {
+  const [query,setQuery]=useState("");
+  const row=(s:WebSession,depth=0):React.ReactNode=><div key={s.ID}>{(!query||`${s.Label} ${s.Task}`.toLowerCase().includes(query.toLowerCase()))&&<button className={`session-row ${selected===s.ID?"active":""}`} style={{paddingLeft:14+depth*12}} aria-current={selected===s.ID?"page":undefined} onClick={()=>onSelect(s.ID)}><span>{depth>0&&<Icon name="return"/>}{s.Label||s.Task||"Untitled conversation"}</span><small>{s.Status} · {new Date(s.CreatedAt).toLocaleDateString(undefined,{month:"short",day:"numeric"})}</small></button>}{s.Children?.map(child=>row(child,depth+1))}</div>;
+  return <><div className="sidebar-brand"><span className="mark">m</span><strong>mulch</strong><small>local workspace</small></div><button className="new-session" onClick={onNew}><span>New conversation</span><Icon name="add"/></button><label className="session-search"><span className="sr-only">Search sessions</span><input placeholder="Search conversations" value={query} onChange={e=>setQuery(e.target.value)}/></label><div className="sidebar-section">CONVERSATIONS <span>{sessions.length}</span></div><nav aria-label="Sessions">{sessions.map(s=>row(s))}{sessions.length===0&&<p className="sidebar-empty">Your conversations will appear here.</p>}</nav><footer className="sidebar-footer">Local files. Durable history.<br/><span>Inspect the evidence behind each repair.</span></footer></>;
+}
