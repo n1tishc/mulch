@@ -16,6 +16,7 @@ lint:
 	golangci-lint run
 
 verify: arch lint ui
+	node scripts/check-web-assets.mjs
 	go vet ./...
 	go test -race ./...
 
@@ -23,6 +24,7 @@ run:
 	go run ./cmd/mulch serve
 
 release-dry:
+	node scripts/check-web-assets.mjs --tracked
 	goreleaser release --snapshot --clean
 
 docs-html:

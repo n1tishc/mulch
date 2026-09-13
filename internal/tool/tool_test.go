@@ -117,6 +117,7 @@ func TestBashSandboxRejectsExpandedOutsideWrite(t *testing.T) {
 func TestFileToolsHonorCancelledContext(t *testing.T) {
 	root := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	cancel()
 	for _, candidate := range []tool.Tool{tool.NewRead(root), tool.NewWrite(root), tool.NewEdit(root)} {
 		result, err := candidate.Run(ctx, raw(`{"path":"file","content":"x","old":"x","new":"y"}`))
@@ -151,23 +152,35 @@ func TestBashParentCancellationKillsProcessGroup(t *testing.T) {
 		b, err := os.ReadFile(filepath.Join(root, "shell.pid"))
 		if err == nil {
 			pid, _ = strconv.Atoi(strings.TrimSpace(string(b)))
-			break
+			if pid > 0 {
+				break
+			}
 		}
 		time.Sleep(time.Millisecond)
 	}
 	if pid == 0 {
 		t.Fatal("bash process did not start")
 	}
+	group, err := syscall.Getpgid(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(-group, syscall.SIGKILL) })
 	cancel()
-	result := <-done
+	var result tool.Result
+	select {
+	case result = <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancelled bash did not return within watchdog deadline")
+	}
 	if !result.IsError || !strings.Contains(result.Output, "cancelled") {
 		t.Fatalf("result = %#v", result)
 	}
-	for i := 0; i < 100 && syscall.Kill(-pid, 0) == nil; i++ {
+	for i := 0; i < 100 && syscall.Kill(-group, 0) == nil; i++ {
 		time.Sleep(time.Millisecond)
 	}
-	if err := syscall.Kill(-pid, 0); err == nil {
-		t.Fatalf("process group %d still exists", pid)
+	if err := syscall.Kill(-group, 0); err == nil {
+		t.Fatalf("process group %d still exists", group)
 	}
 }
 

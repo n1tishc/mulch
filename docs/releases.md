@@ -1,5 +1,7 @@
 # Distribution and releases
 
+The current target is a [small portfolio release](release-readiness.md), not the deferred multi-provider platform. [Draft 0.1.0 notes](release-notes-0.1.0.md) and a [five-minute walkthrough](portfolio-demo.md) accompany it. Source/demo availability and native archives are sufficient for the portfolio; npm publication is optional.
+
 Mulch has one native implementation and one version per release. GoReleaser builds Linux, macOS, and Windows for amd64 and arm64. Archives have the explicit name `mulch_VERSION_GOOS_GOARCH.tar.gz` (Windows uses `.zip`). `checksums.txt` covers the archives. The curl installer is attached as `install.sh`.
 
 The npm entry package is `@n1tishc/mulch`. Six optional packages contain the corresponding native binaries with `os` and `cpu` constraints. Their exact versions match the entry package. The wrapper forwards arguments, standard streams, exit codes, and termination signals. There is no postinstall script, download on first run, or local compilation. Keep optional dependencies enabled. Node 22 or later is required for the wrapper; the curl-installed executable does not require Node.

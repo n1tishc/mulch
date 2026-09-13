@@ -1,4 +1,5 @@
-export type WebConfig = { workspace: string; model: string; mode: string; policy: Record<string, number>; ready: boolean; can_manage?: boolean; read_only_reason?: string };
+export type ProviderConfig = { name:string; models:string[] };
+export type WebConfig = { workspace: string; provider?:string; providers?:ProviderConfig[]; model: string; mode: string; policy: Record<string, number>; ready: boolean; can_manage?: boolean; read_only_reason?: string };
 export type WebSession = { ID: string; Label: string; Task: string; Model: string; Workdir: string; Status: string; CreatedAt: string; ParentID?: string; Children?: WebSession[] };
 export type SessionDetail = { session: WebSession; owner: "daemon" | "external" | "inactive"; can_resume: boolean; can_stop: boolean; can_steer: boolean; can_rename: boolean; can_delete?: boolean };
 

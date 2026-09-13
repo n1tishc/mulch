@@ -22,7 +22,10 @@ type Options struct {
 	Bus         *bus.Bus
 	Run         Runner
 	Resume      Runner
-	Close       func() error
+	// Prepare validates and captures per-task settings synchronously, before
+	// launch. When set, it supplies the runner for both new and resumed tasks.
+	Prepare func(resume bool) (Runner, error)
+	Close   func() error
 }
 
 type Status struct {
@@ -44,6 +47,7 @@ type Manager struct {
 	cancel       context.CancelFunc
 	run          Runner
 	resume       Runner
+	prepare      func(bool) (Runner, error)
 	close        func() error
 	bus          *bus.Bus
 	limit        chan struct{}
@@ -66,7 +70,7 @@ func New(opts Options) *Manager {
 		opts.Bus = bus.New()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Manager{ctx: ctx, cancel: cancel, run: opts.Run, resume: opts.Resume, close: opts.Close, bus: opts.Bus, limit: make(chan struct{}, opts.MaxSessions), sessions: make(map[string]*owned)}
+	return &Manager{ctx: ctx, cancel: cancel, run: opts.Run, resume: opts.Resume, prepare: opts.Prepare, close: opts.Close, bus: opts.Bus, limit: make(chan struct{}, opts.MaxSessions), sessions: make(map[string]*owned)}
 }
 
 func NewBus() *bus.Bus { return bus.New() }
@@ -76,18 +80,34 @@ func (m *Manager) Start(ctx context.Context, task string) (string, error) {
 }
 
 func (m *Manager) StartWith(ctx context.Context, task string, opts RunOpts) (string, error) {
+	runner := m.run
+	if m.prepare != nil {
+		var err error
+		runner, err = m.prepare(false)
+		if err != nil {
+			return "", err
+		}
+	}
 	id, err := event.NewSessionID()
 	if err != nil {
 		return "", err
 	}
-	return m.launch(ctx, id, task, opts, m.run)
+	return m.launch(ctx, id, task, opts, runner)
 }
 
 func (m *Manager) ResumeWith(ctx context.Context, id, task string, opts RunOpts) (string, error) {
-	if m.resume == nil {
+	runner := m.resume
+	if m.prepare != nil {
+		var err error
+		runner, err = m.prepare(true)
+		if err != nil {
+			return "", err
+		}
+	}
+	if runner == nil {
 		return "", errors.New("session manager cannot resume sessions")
 	}
-	return m.launch(ctx, id, task, opts, m.resume)
+	return m.launch(ctx, id, task, opts, runner)
 }
 
 func (m *Manager) launch(ctx context.Context, id, task string, opts RunOpts, runner Runner) (string, error) {

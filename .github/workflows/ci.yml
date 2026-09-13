@@ -31,6 +31,8 @@ jobs:
         run: make arch
       - name: Frontend install and build
         run: make ui
+      - name: Embedded asset tracking
+        run: node scripts/check-web-assets.mjs --tracked
       - name: Browser acceptance (deterministic provider)
         working-directory: ui
         run: |
@@ -47,6 +49,25 @@ jobs:
       - uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8
         with:
           version: v2.4.0
+
+  cancellation:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: Install Linux containment dependency
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+          sudo sysctl --write kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Stress process cancellation
+        run: go test -race ./internal/tool ./internal/agent -run 'TestBashParentCancellationKillsProcessGroup|TestRunCancelsAllToolProcessGroupsAndRecordsSession' -count=100 -timeout=3m
 
   distribution:
     strategy:

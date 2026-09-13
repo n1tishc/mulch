@@ -73,7 +73,7 @@ func TestWebIdempotencyCapabilitiesAndOrigin(t *testing.T) {
 		t.Fatal("duplicate resume")
 	}
 	// A new server object reuses durable acceptance instead of calling the runner.
-	h = New(s, c).Handler()
+	h = New(s, c).WithConfig(Config{Ready: true}).Handler()
 	if w := webMutation(h, "POST", "/api/sessions/saved/resume", `{"text":"follow up","request_id":"resume"}`); w.Code != 202 || c.resumes != 1 {
 		t.Fatal("restart lost receipt")
 	}

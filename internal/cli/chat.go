@@ -44,8 +44,9 @@ func chat(ctx context.Context, args []string, opts Options) error {
 		return errors.New("--context-window must be positive")
 	}
 	key := opts.Getenv("MULCH_PROVIDER_API_KEY")
-	if key == "" {
-		return errors.New("provider API key is required; run mulch config set api-key (or set MULCH_PROVIDER_API_KEY)")
+	profiles, activeProvider, err := configuredProviderProfiles(opts.Getenv)
+	if err != nil {
+		return err
 	}
 	policy, err := configuredPolicy(*policyPath)
 	if err != nil {
@@ -105,7 +106,8 @@ func chat(ctx context.Context, args []string, opts Options) error {
 		mode = harness.Race
 	}
 	config := runtimeConfig(store, router, opts, key, recorded.Model, recorded.ContextWindow, mode, policy)
-	control := &chatControl{store: store, recorded: &recorded, existing: &existing, config: &config, db: *db}
+	config.Provider = activeProvider
+	control := &chatControl{store: store, recorded: &recorded, existing: &existing, config: &config, db: *db, provider: activeProvider, providers: profiles, llmFactory: opts.LLMFactory, configPath: configPath(opts.Getenv)}
 	defer control.closeInspector()
 	if chatTerminal(opts) {
 		return runTerminalChat(ctx, opts, control, output)
@@ -190,6 +192,10 @@ func chat(ctx context.Context, args []string, opts Options) error {
 		}
 		switch task {
 		case "":
+			continue
+		}
+		if profile := control.activeProvider(); control.llmFactory != nil && (profile == nil || profile.APIKey == "") {
+			output.print("Provider API key is missing. Use /api-key in the interactive terminal or run mulch config set api-key.\n")
 			continue
 		}
 		runCtx, cancel := context.WithCancel(ctx)

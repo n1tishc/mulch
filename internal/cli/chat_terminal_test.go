@@ -10,6 +10,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/n1tishc/mulch/internal/event"
 	"github.com/n1tishc/mulch/internal/provider"
@@ -98,6 +99,20 @@ func TestTerminalOutputStripsControlSequences(t *testing.T) {
 	got := terminalSafe("normal\x1b[2J\x1b]52;c;ZXZpbA==\a\r\ntext")
 	if got != "normal\ntext" {
 		t.Fatalf("terminal control escaped filtering: %q", got)
+	}
+}
+
+func TestTerminalTranscriptFormatsRolesAndMarkdown(t *testing.T) {
+	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("108"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	got := ansi.Strip(renderTerminalTranscript("You › hello\nMulch\n## Result\n- **Done** with `result.txt`\n```go\nfmt.Println(1)\n```", accent, dim))
+	for _, want := range []string{"YOU  › hello", "MULCH", "Result", "• Done with  result.txt ", "fmt.Println(1)"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "**Done**") || strings.Contains(got, "```") {
+		t.Fatalf("raw markdown remained: %q", got)
 	}
 }
 

@@ -5,6 +5,7 @@ project_name: mulch
 before:
   hooks:
     - sh -c "cd ui && npm ci && npm run build"
+    - node scripts/check-web-assets.mjs --tracked
 
 builds:
   - id: mulch

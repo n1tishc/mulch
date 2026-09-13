@@ -66,13 +66,13 @@ type Config struct {
 	Store          *event.SQLiteStore
 	Router         *Router
 	// Every provider call is created through this seam, including candidate/judge/summary calls.
-	LLM                     func(sessionID, role string) provider.LLM
-	Scorers                 func(*score.Coherence) []score.Scorer
-	Weights                 score.Weights
-	Policy                  intervene.Policy
-	Model, JudgeModel       string
-	ContextWindow, MaxTurns int
-	Mode                    Mode
+	LLM                         func(sessionID, role string) provider.LLM
+	Scorers                     func(*score.Coherence) []score.Scorer
+	Weights                     score.Weights
+	Policy                      intervene.Policy
+	Provider, Model, JudgeModel string
+	ContextWindow, MaxTurns     int
+	Mode                        Mode
 }
 
 func (c Config) Execute(ctx context.Context, recorded event.Session, resume bool, task string, extra []hook.Hook, emit func(string)) error {
@@ -156,7 +156,7 @@ func (m *runMetadata) BeforeTurn(ctx context.Context, turn *hook.Turn) error {
 	if m.written {
 		return nil
 	}
-	payload, err := json.Marshal(map[string]any{"version": 1, "mode": m.config.Mode, "model": m.config.Model, "judge_model": m.config.JudgeModel, "policy": m.config.Policy, "weights": m.config.Weights, "scorers": m.scorers, "context_window": m.config.ContextWindow})
+	payload, err := json.Marshal(map[string]any{"version": 1, "provider": m.config.Provider, "mode": m.config.Mode, "model": m.config.Model, "judge_model": m.config.JudgeModel, "policy": m.config.Policy, "weights": m.config.Weights, "scorers": m.scorers, "context_window": m.config.ContextWindow})
 	if err != nil {
 		return err
 	}

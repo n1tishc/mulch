@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -207,32 +208,50 @@ func serveMode(ctx context.Context, args []string, opts Options, web bool) error
 			return fmt.Errorf("session: %w", err)
 		}
 	}
-	var control server.Control
-	var manager *session.Manager
-	if key := opts.Getenv("MULCH_PROVIDER_API_KEY"); key != "" {
-		model := envOr(opts.Getenv, "MULCH_MODEL", defaultModel)
-		execute := func(resume bool) session.Runner {
-			return func(runCtx context.Context, id, task string, run session.RunOpts, steering *session.Steering) error {
-				workdir := run.Workdir
-				if workdir == "" {
-					workdir = "."
-				}
-				recorded := event.Session{ID: id, Task: task, Model: model, Workdir: workdir, ContextWindow: 200000}
-				if resume {
-					var err error
-					recorded, err = store.Session(runCtx, id)
-					if err != nil {
-						return err
-					}
-				}
-				config := runtimeConfig(store, router, opts, key, recorded.Model, recorded.ContextWindow, mode, policy)
-				return config.Execute(runCtx, recorded, resume, task, []hook.Hook{steering.Bind(store)}, nil)
+	profiles, activeProvider, err := configuredProviderProfiles(opts.Getenv)
+	if err != nil {
+		return err
+	}
+	selectedModel := envOr(opts.Getenv, "MULCH_MODEL", defaultModel)
+	selectedMode := mode
+	var settingsMu sync.RWMutex
+	selectedProfile := func() providerProfile {
+		for _, profile := range profiles {
+			if profile.Name == activeProvider {
+				return profile
 			}
 		}
-		manager = session.New(session.Options{Bus: eventBus, Run: execute(false), Resume: execute(true)})
-		control = server.NewControl(manager, store)
-		defer func() { _ = manager.Close() }()
+		return providerProfile{Name: activeProvider, APIKey: opts.Getenv("MULCH_PROVIDER_API_KEY"), BaseURL: opts.Getenv("MULCH_PROVIDER_BASE_URL"), Models: []string{selectedModel}}
 	}
+	execute := func(resume bool) (session.Runner, error) {
+		settingsMu.RLock()
+		profile, model, runMode := selectedProfile(), selectedModel, selectedMode
+		settingsMu.RUnlock()
+		if profile.APIKey == "" {
+			return nil, fmt.Errorf("provider %q has no API key; configure it with mulch config or select a configured provider", profile.Name)
+		}
+		return func(runCtx context.Context, id, task string, run session.RunOpts, steering *session.Steering) error {
+			workdir := run.Workdir
+			if workdir == "" {
+				workdir = "."
+			}
+			recorded := event.Session{ID: id, Task: task, Model: model, Workdir: workdir, ContextWindow: 200000}
+			if resume {
+				var err error
+				recorded, err = store.Session(runCtx, id)
+				if err != nil {
+					return err
+				}
+			}
+			config := runtimeConfig(store, router, opts, profile.APIKey, model, recorded.ContextWindow, runMode, policy)
+			config.Provider = profile.Name
+			config.LLM = func(string, string) provider.LLM { return opts.LLMFactory(profile.APIKey, profile.BaseURL) }
+			return config.Execute(runCtx, recorded, resume, task, []hook.Hook{steering.Bind(store)}, nil)
+		}, nil
+	}
+	manager := session.New(session.Options{Bus: eventBus, Prepare: execute})
+	control := server.NewControl(manager, store)
+	defer func() { _ = manager.Close() }()
 	url := "http://" + viewerAddress(listener.Addr().String())
 	if *selected != "" {
 		url += "?session=" + *selected
@@ -243,7 +262,59 @@ func serveMode(ctx context.Context, args []string, opts Options, web bool) error
 			_, _ = fmt.Fprintf(opts.Stderr, "Open the URL above in your browser (%v).\n", err)
 		}
 	}
-	return server.New(store, control).WithConfig(server.Config{Workspace: workspace, Model: envOr(opts.Getenv, "MULCH_MODEL", defaultModel), Mode: string(mode), Policy: policy, Ready: control != nil, Manage: true}).ServeListener(ctx, listener)
+	publicProviders := make([]server.ProviderConfig, 0, len(profiles))
+	for _, profile := range profiles {
+		publicProviders = append(publicProviders, server.ProviderConfig{Name: profile.Name, Models: profile.Models})
+	}
+	webConfig := server.Config{Workspace: workspace, Provider: activeProvider, Providers: publicProviders, Model: selectedModel, Mode: string(selectedMode), Policy: policy, Ready: selectedProfile().APIKey != "", Manage: true}
+	readinessReason := func(ready bool) string {
+		if ready {
+			return ""
+		}
+		return "Selected provider has no API key. Configure it in the terminal with mulch config, or select a configured provider."
+	}
+	webConfig.ReadOnlyReason = readinessReason(webConfig.Ready)
+	webConfig.OnChange = func(providerName, modelName, modeName string) (server.Config, error) {
+		settingsMu.Lock()
+		defer settingsMu.Unlock()
+		// Validate the whole update before changing any selection.
+		if modeName != "" && !harness.ValidMode(harness.Mode(modeName)) {
+			return webConfig, fmt.Errorf("unknown mode %q", modeName)
+		}
+		if providerName != "" {
+			found := false
+			for _, profile := range profiles {
+				if profile.Name == providerName {
+					found = true
+					activeProvider = providerName
+					if modelName == "" && len(profile.Models) > 0 {
+						selectedModel = profile.Models[0]
+					}
+					break
+				}
+			}
+			if !found {
+				return webConfig, fmt.Errorf("provider %q is not configured", providerName)
+			}
+		}
+		if modelName != "" {
+			selectedModel = modelName
+		}
+		if modeName != "" {
+			candidate := harness.Mode(modeName)
+			if !harness.ValidMode(candidate) {
+				return webConfig, fmt.Errorf("unknown mode %q", modeName)
+			}
+			selectedMode = candidate
+		}
+		webConfig.Provider = activeProvider
+		webConfig.Model = selectedModel
+		webConfig.Mode = string(selectedMode)
+		webConfig.Ready = selectedProfile().APIKey != ""
+		webConfig.ReadOnlyReason = readinessReason(webConfig.Ready)
+		return webConfig, nil
+	}
+	return server.New(store, control).WithConfig(webConfig).ServeListener(ctx, listener)
 }
 
 func viewerAddress(address string) string {

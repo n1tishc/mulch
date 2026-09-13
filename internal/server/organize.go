@@ -24,7 +24,7 @@ func (s *Server) workspaces(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, paths, err)
 		return
 	}
-	if !s.config.Manage {
+	if !s.currentConfig().Manage {
 		http.Error(w, "this browser is read-only", http.StatusForbidden)
 		return
 	}
@@ -56,7 +56,7 @@ func (s *Server) workspaces(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteConversation(w http.ResponseWriter, r *http.Request) {
-	if !s.config.Manage {
+	if !s.currentConfig().Manage {
 		http.Error(w, "this browser is read-only", http.StatusForbidden)
 		return
 	}

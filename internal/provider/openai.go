@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -11,17 +12,30 @@ import (
 
 const DefaultBaseURL = "https://opencode.ai/zen/go/v1"
 
-type OpenAI struct{ client openai.Client }
+type OpenAI struct {
+	client openai.Client
+	apiKey string
+}
 
 func NewOpenAI(apiKey, baseURL string) *OpenAI {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
 	client := openai.NewClient(option.WithAPIKey(apiKey), option.WithBaseURL(baseURL))
-	return &OpenAI{client: client}
+	return &OpenAI{client: client, apiKey: apiKey}
 }
 
-func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Delta) (Response, error) {
+func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Delta) (response Response, err error) {
+	// Upstream authentication errors may echo the supplied key. Sanitize at
+	// the adapter boundary before callers can print or persist the error.
+	defer func() {
+		if err != nil && o.apiKey != "" {
+			message := strings.ReplaceAll(err.Error(), o.apiKey, "[redacted]")
+			if message != err.Error() {
+				err = &redactedProviderError{cause: err, message: message}
+			}
+		}
+	}()
 	messages := make([]openai.ChatCompletionMessageParamUnion, 0, len(req.Messages))
 	for _, message := range req.Messages {
 		text := ""
@@ -106,3 +120,11 @@ func (o *OpenAI) Stream(ctx context.Context, req Request, out chan<- Delta) (Res
 }
 
 var errorsNewInconsistentStream = fmt.Errorf("provider returned an inconsistent stream")
+
+type redactedProviderError struct {
+	cause   error
+	message string
+}
+
+func (e *redactedProviderError) Error() string { return e.message }
+func (e *redactedProviderError) Unwrap() error { return e.cause }

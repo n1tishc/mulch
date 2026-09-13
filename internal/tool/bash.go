@@ -78,6 +78,15 @@ func (b *Bash) Run(ctx context.Context, input json.RawMessage) (Result, error) {
 	var output bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &output, &output
 	err = cmd.Run()
+	// A shell can exit while a background descendant keeps stdout open.
+	// WaitDelay bounds the pipe wait; explicitly shut down that group too.
+	if errors.Is(err, exec.ErrWaitDelay) && cmd.Cancel != nil {
+		_ = cmd.Cancel()
+	}
+	var cleanupErr error
+	if runCtx.Err() != nil || errors.Is(err, exec.ErrWaitDelay) {
+		cleanupErr = finishProcessCancellation(cmd)
+	}
 	text := output.String()
 	limit := b.MaxOutput
 	if limit <= 0 {
@@ -85,6 +94,9 @@ func (b *Bash) Run(ctx context.Context, input json.RawMessage) (Result, error) {
 	}
 	if len(text) > limit {
 		text = text[:limit] + "\n[output truncated]"
+	}
+	if cleanupErr != nil {
+		text += "\n" + cleanupErr.Error()
 	}
 	if runCtx.Err() == context.DeadlineExceeded {
 		return Result{Output: text + "\ncommand timed out", IsError: true}, nil

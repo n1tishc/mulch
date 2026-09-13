@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/n1tishc/mulch/internal/event"
+	"github.com/n1tishc/mulch/internal/provider"
 	harness "github.com/n1tishc/mulch/internal/runtime"
 	"github.com/n1tishc/mulch/internal/server"
 )
@@ -23,7 +24,9 @@ var chatCommands = []struct{ name, description string }{
 	{"/resume", "Reopen a session: /resume ID"},
 	{"/session", "Show current session and database"},
 	{"/status", "Show model, repair mode, usage, and recorded health"},
-	{"/model", "Set model for a fresh session: /model NAME"},
+	{"/model", "List models or switch this conversation: /model NAME"},
+	{"/provider", "List configured providers or switch: /provider NAME"},
+	{"/api-key", "Securely update the current provider key"},
 	{"/mode", "Set plain, control, intervention, or race for subsequent tasks"},
 	{"/rename", "Label this saved session: /rename NAME"},
 	{"/history", "Show saved user and assistant messages"},
@@ -43,6 +46,10 @@ type chatControl struct {
 	inspectorURL    string
 	inspectorCancel context.CancelFunc
 	inspectorDone   chan error
+	provider        string
+	providers       []providerProfile
+	llmFactory      LLMFactory
+	configPath      string
 }
 
 func (c *chatControl) fresh(model string) error {
@@ -56,6 +63,63 @@ func (c *chatControl) fresh(model string) error {
 	*c.recorded = event.Session{ID: id, Model: model, Workdir: c.recorded.Workdir, ContextWindow: c.recorded.ContextWindow}
 	*c.existing = false
 	c.config.Model = model
+	return nil
+}
+
+func (c *chatControl) activeProvider() *providerProfile {
+	for i := range c.providers {
+		if c.providers[i].Name == c.provider {
+			return &c.providers[i]
+		}
+	}
+	return nil
+}
+
+func (c *chatControl) applyProvider(profile *providerProfile) {
+	c.provider = profile.Name
+	c.config.Provider = profile.Name
+	previous := c.config.Model
+	if len(profile.Models) > 0 {
+		c.config.Model = profile.Models[0]
+	}
+	if c.config.JudgeModel == previous {
+		c.config.JudgeModel = c.config.Model
+	}
+	c.config.LLM = func(string, string) provider.LLM { return c.llmFactory(profile.APIKey, profile.BaseURL) }
+}
+
+func (c *chatControl) setAPIKey(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return errors.New("API key cannot be empty")
+	}
+	profile := c.activeProvider()
+	if profile == nil {
+		profile = &providerProfile{Name: "default", BaseURL: "", Models: []string{c.config.Model}}
+		c.providers = append(c.providers, *profile)
+		profile = &c.providers[len(c.providers)-1]
+		c.provider = profile.Name
+	}
+	if c.configPath == "" {
+		return errors.New("cannot locate the config file; set HOME, XDG_CONFIG_HOME, or MULCH_CONFIG")
+	}
+	values, err := readConfig(c.configPath)
+	if err != nil {
+		return err
+	}
+	key := "provider." + profile.Name + ".api-key"
+	if profile.Name == "default" {
+		key = "api-key"
+	}
+	values[key] = value
+	if profile.Name != "default" {
+		values["provider"] = profile.Name
+	}
+	if err = writeConfig(c.configPath, values); err != nil {
+		return err
+	}
+	profile.APIKey = value
+	c.applyProvider(profile)
 	return nil
 }
 
@@ -82,7 +146,7 @@ func (c *chatControl) command(ctx context.Context, input string) (string, bool, 
 	case "/cancel":
 		return "No task is running.\n", false, nil
 	case "/new", "/clear":
-		if err := c.fresh(c.recorded.Model); err != nil {
+		if err := c.fresh(c.config.Model); err != nil {
 			return "", false, err
 		}
 		return "New session: " + c.recorded.ID + "\nPrevious history remains saved.\n", false, nil
@@ -120,12 +184,54 @@ func (c *chatControl) command(ctx context.Context, input string) (string, bool, 
 		return fmt.Sprintf("Resumed %s · %s\n%s", saved.ID, saved.Workdir, c.history(ctx)), false, nil
 	case "/model":
 		if arg == "" {
-			return "Current model: " + c.recorded.Model + "\n/model NAME starts a fresh session using that provider model ID.\n", false, nil
+			var out strings.Builder
+			fmt.Fprintf(&out, "Models for %s:\n", c.provider)
+			models := []string{c.config.Model}
+			if profile := c.activeProvider(); profile != nil && len(profile.Models) > 0 {
+				models = profile.Models
+			}
+			for _, model := range models {
+				marker := "  "
+				if model == c.config.Model {
+					marker = "* "
+				}
+				fmt.Fprintf(&out, "%s%s\n", marker, model)
+			}
+			out.WriteString("Switch with /model NAME. The conversation history stays intact.\n")
+			return out.String(), false, nil
 		}
-		if err := c.fresh(arg); err != nil {
-			return "", false, err
+		previous := c.config.Model
+		c.config.Model = arg
+		if c.config.JudgeModel == previous {
+			c.config.JudgeModel = arg
 		}
-		return "New session using " + arg + ". Previous conversation preserved.\n", false, nil
+		return "Now using " + arg + " for the next turn. Conversation history is unchanged.\n", false, nil
+	case "/provider":
+		if arg == "" {
+			if len(c.providers) == 0 {
+				return "No saved providers. Configure one with mulch config; /help shows the format.\n", false, nil
+			}
+			var out strings.Builder
+			out.WriteString("Configured providers:\n")
+			for _, profile := range c.providers {
+				marker := "  "
+				if profile.Name == c.provider {
+					marker = "* "
+				}
+				fmt.Fprintf(&out, "%s%s  %d models\n", marker, profile.Name, len(profile.Models))
+			}
+			out.WriteString("Switch with /provider NAME.\n")
+			return out.String(), false, nil
+		}
+		for i := range c.providers {
+			if c.providers[i].Name == arg {
+				c.applyProvider(&c.providers[i])
+				return fmt.Sprintf("Now using %s with %s. Conversation history is unchanged.\n", arg, c.config.Model), false, nil
+			}
+		}
+		return "", false, fmt.Errorf("provider %q is not configured; use /provider to list choices", arg)
+	case "/api-key":
+		return "In the interactive terminal, /api-key opens a hidden entry field. For line mode, run mulch config set api-key.\n", false, nil
 	case "/mode":
 		if arg == "" {
 			return "Mode: " + string(c.config.Mode) + "\nChoose plain, control (scoring only), intervention, or race.\n", false, nil
@@ -151,7 +257,7 @@ func (c *chatControl) command(ctx context.Context, input string) (string, bool, 
 	case "/history":
 		return c.history(ctx), false, nil
 	case "/status":
-		out := fmt.Sprintf("Session: %s\nModel: %s · judge: %s\nMode: %s\nWorkspace: %s\nContext window: %d\n", c.recorded.ID, c.recorded.Model, c.config.JudgeModel, c.config.Mode, c.recorded.Workdir, c.recorded.ContextWindow)
+		out := fmt.Sprintf("Session: %s\nProvider: %s\nModel: %s · judge: %s\nMode: %s\nWorkspace: %s\nContext window: %d\n", c.recorded.ID, c.provider, c.config.Model, c.config.JudgeModel, c.config.Mode, c.recorded.Workdir, c.recorded.ContextWindow)
 		if !*c.existing {
 			return out + "Ready for first message.\n", false, nil
 		}

@@ -12,6 +12,56 @@ import (
 	"github.com/n1tishc/mulch/internal/session"
 )
 
+func TestPrepareRejectsUnreadyAndSnapshotsBeforeLaunch(t *testing.T) {
+	var selection atomic.Int32
+	started := make(chan int32, 1)
+	release := make(chan struct{})
+	m := session.New(session.Options{Prepare: func(resume bool) (session.Runner, error) {
+		snapshot := selection.Load()
+		if snapshot == 0 {
+			return nil, errors.New("missing credentials")
+		}
+		return func(ctx context.Context, _, _ string, _ session.RunOpts, _ *session.Steering) error {
+			select {
+			case <-release:
+				started <- snapshot
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}, nil
+	}})
+	defer m.Close()
+	if _, err := m.Start(t.Context(), "unready"); err == nil || len(m.List()) != 0 {
+		t.Fatal("unready start created a task")
+	}
+	if _, err := m.ResumeWith(t.Context(), "saved", "unready", session.RunOpts{}); err == nil || len(m.List()) != 0 {
+		t.Fatal("unready resume created a task")
+	}
+	selection.Store(1)
+	id, err := m.Start(t.Context(), "ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection.Store(2)
+	close(release)
+	if err := m.Wait(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-started; got != 1 {
+		t.Fatalf("task used selection %d, want snapshot 1", got)
+	}
+	if _, err := m.ResumeWith(t.Context(), id, "follow-up", session.RunOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Wait(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-started; got != 2 {
+		t.Fatalf("resume used selection %d, want current selection 2", got)
+	}
+}
+
 func TestManagerAppliesBackpressureAndRunsThreeSessionsConcurrently(t *testing.T) {
 	var active, peak atomic.Int32
 	release := make(chan struct{})

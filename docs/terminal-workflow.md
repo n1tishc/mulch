@@ -12,7 +12,7 @@ go build -o dist/mulch ./cmd/mulch
 ./dist/mulch --workdir /absolute/path/to/project
 ```
 
-Set `MULCH_PROVIDER_API_KEY`, `MULCH_PROVIDER_BASE_URL`, and `MULCH_MODEL` as described in the README, or use `.env` in the launch directory. The interface uses this configuration; there is no in-app provider login flow. `mulch chat` launches the same interface explicitly. Once installed on PATH, simply run `mulch` from a project directory.
+Set `MULCH_PROVIDER_API_KEY`, `MULCH_PROVIDER_BASE_URL`, and `MULCH_MODEL` as described in the README, or save one or more named provider profiles. The terminal can securely add the active profile's key with `/api-key`. `mulch chat` launches the same interface explicitly. Once installed on PATH, simply run `mulch` from a project directory.
 
 Describe a task, inspect the streamed response and tool results, then send a follow-up in the same session. While Mulch works, you can edit the next message; sending it queues it for after the current task. The queue is in memory. Esc/Ctrl+C cancels current work and clears queued messages. It does not undo file changes already made by tools.
 
@@ -39,12 +39,14 @@ Type `/` to browse commands, or type a prefix to filter. Terminal history is loc
 | Command | Behavior |
 |---|---|
 | `/help` | List commands and controls |
-| `/new` or `/clear` | Start a fresh conversation without deleting previous history |
+| `/new` or `/clear` | Clear the transcript and start a fresh conversation without deleting previous history |
 | `/sessions` | List saved session IDs, labels, statuses, and tasks |
 | `/resume ID` | Switch to a saved session and show its conversation |
 | `/session` | Show the current ID and database |
 | `/status` | Show model, workspace, repair mode, recorded health, incomplete scoring, and primary-agent usage |
-| `/model NAME` | Start a fresh session with that model ID; `/model` shows the current model |
+| `/model NAME` | Use that model on the next turn without dropping conversation history; `/model` lists the active provider's configured models |
+| `/provider NAME` | Switch provider for the next turn; `/provider` lists configured providers |
+| `/api-key` | Open a hidden field and save the active provider's API key |
 | `/mode plain` | Disable scoring and repair for subsequent tasks |
 | `/mode control` | Score without interventions |
 | `/mode intervention` | Enable the repair ladder |
@@ -87,6 +89,6 @@ The terminal implementation uses pinned Bubble Tea and Lip Gloss dependencies. D
 
 `/web` aliases `/inspect` and works during a task. `/web --no-open` prints the URL. The browser opens the recorded execution tree for this conversation; the terminal retains execution control. Exiting the terminal closes its attached viewer.
 
-Run `mulch config` before launching to see setup commands. Save `base-url` and `model` with `mulch config set KEY VALUE`; save the key with `mulch config set api-key` (hidden prompt). `mulch config show` redacts secrets. Restart the interface after configuration changes.
+Run `mulch config` to see setup commands. A named profile uses `provider.NAME.base-url`, `provider.NAME.models`, and `provider.NAME.api-key`, with `provider` selecting the default profile. Legacy `base-url`, `model`, and `api-key` keys remain supported. `mulch config show` redacts every API key. Runtime `/provider`, `/model`, `/mode`, and `/api-key` changes apply immediately to subsequent terminal turns.
 
 The terminal uses a compact header, bounded reading width, a separate prompt and status area, and scroll anchoring while reading older output. The cursor highlights the existing character instead of inserting a visual space into the prompt. Use PgUp/PgDn for history, Alt+Enter for multiline input, and `/web` for the detailed execution tree.

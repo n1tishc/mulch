@@ -14,16 +14,59 @@ import (
 )
 
 type Config struct {
-	Workspace      string `json:"workspace"`
-	Model          string `json:"model"`
-	Mode           string `json:"mode"`
-	Policy         any    `json:"policy"`
-	Ready          bool   `json:"ready"`
-	Manage         bool   `json:"can_manage"`
-	ReadOnlyReason string `json:"read_only_reason,omitempty"`
+	Workspace      string                                       `json:"workspace"`
+	Provider       string                                       `json:"provider,omitempty"`
+	Providers      []ProviderConfig                             `json:"providers,omitempty"`
+	Model          string                                       `json:"model"`
+	Mode           string                                       `json:"mode"`
+	Policy         any                                          `json:"policy"`
+	Ready          bool                                         `json:"ready"`
+	Manage         bool                                         `json:"can_manage"`
+	ReadOnlyReason string                                       `json:"read_only_reason,omitempty"`
+	OnChange       func(string, string, string) (Config, error) `json:"-"`
 }
 
-func (s *Server) WithConfig(config Config) *Server { s.config = config; return s }
+type ProviderConfig struct {
+	Name   string   `json:"name"`
+	Models []string `json:"models"`
+}
+
+func (s *Server) WithConfig(config Config) *Server {
+	s.configMu.Lock()
+	s.config = config
+	s.configMu.Unlock()
+	return s
+}
+func (s *Server) currentConfig() Config {
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
+	return s.config
+}
+
+func (s *Server) runtimeConfig(w http.ResponseWriter, r *http.Request) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	current := s.config
+	if current.OnChange == nil {
+		http.Error(w, "runtime configuration is read-only", http.StatusServiceUnavailable)
+		return
+	}
+	var request struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+		Mode     string `json:"mode"`
+	}
+	if !decodeRequest(w, r, &request) {
+		return
+	}
+	next, err := current.OnChange(request.Provider, request.Model, request.Mode)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.config = next
+	writeJSON(w, next, nil)
+}
 
 type webControl interface {
 	Resume(context.Context, string, string) (string, error)
@@ -48,7 +91,8 @@ func (s *Server) sessionDetail(w http.ResponseWriter, r *http.Request) {
 	if owned {
 		owner = "daemon"
 	}
-	writeJSON(w, map[string]any{"session": saved, "owner": owner, "can_resume": s.control != nil && !running, "can_stop": owned, "can_steer": owned, "can_rename": s.control != nil && !running, "can_delete": s.config.Manage && !running}, nil)
+	config := s.currentConfig()
+	writeJSON(w, map[string]any{"session": saved, "owner": owner, "can_resume": s.control != nil && config.Ready && !running, "can_stop": owned, "can_steer": owned, "can_rename": s.control != nil && !running, "can_delete": config.Manage && !running}, nil)
 }
 
 func (s *Server) resume(w http.ResponseWriter, r *http.Request) {

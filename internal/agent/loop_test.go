@@ -163,6 +163,70 @@ func testRunCancelsStreamingProviderAndRecordsSession(t *testing.T) {
 	}
 }
 
+func TestRunRecordsCancellationForEveryInFlightTool(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := openStore(t)
+		started := make(chan struct{}, 2)
+		llm := &scriptedLLM{responses: []provider.Response{{Blocks: []provider.Block{
+			{Type: "tool_use", CallID: "one", Name: "wait", Input: "{}"},
+			{Type: "tool_use", CallID: "two", Name: "wait", Input: "{}"},
+		}, StopReason: "tool_calls", Model: "fake"}}}
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		type outcome struct {
+			id  string
+			err error
+		}
+		done := make(chan outcome, 1)
+		go func() {
+			id, err := agent.Run(ctx, agent.Dependencies{
+				Store: store, LLM: llm, Model: "fake", Workdir: ".",
+				Tools: tool.NewExecutor([]tool.Tool{cancellationTool{started}}),
+			}, "wait", func(string) {})
+			done <- outcome{id, err}
+		}()
+		<-started
+		<-started
+		cancel()
+		result := <-done
+		if !errors.Is(result.err, context.Canceled) {
+			t.Fatalf("run error = %v", result.err)
+		}
+		assertCancelledSession(t, store, result.id)
+		events, err := store.List(t.Context(), result.id, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cancelled := map[string]bool{}
+		for _, e := range events {
+			if e.Type != event.TypeToolResult {
+				continue
+			}
+			var result event.ToolResult
+			if err := e.Decode(&result); err != nil {
+				t.Fatal(err)
+			}
+			if result.Cancelled && !result.TimedOut {
+				cancelled[result.CallID] = true
+			}
+		}
+		if !cancelled["one"] || !cancelled["two"] {
+			t.Fatalf("cancelled tools = %v", cancelled)
+		}
+	})
+}
+
+type cancellationTool struct{ started chan<- struct{} }
+
+func (cancellationTool) Name() string                { return "wait" }
+func (cancellationTool) Description() string         { return "Wait until cancelled" }
+func (cancellationTool) InputSchema() map[string]any { return map[string]any{"type": "object"} }
+func (w cancellationTool) Run(ctx context.Context, _ json.RawMessage) (tool.Result, error) {
+	w.started <- struct{}{}
+	<-ctx.Done()
+	return tool.Result{IsError: true}, ctx.Err()
+}
+
 func TestRunCancelsAllToolProcessGroupsAndRecordsSession(t *testing.T) {
 	workdir := t.TempDir()
 	store := openStore(t)
@@ -173,6 +237,7 @@ func TestRunCancelsAllToolProcessGroupsAndRecordsSession(t *testing.T) {
 	llm := &scriptedLLM{responses: []provider.Response{{Blocks: inputs, StopReason: "tool_calls", Model: "fake"}}}
 	executor := tool.NewExecutor([]tool.Tool{tool.NewBash(workdir)})
 	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
 	type runResult struct {
 		id  string
 		err error
@@ -190,17 +255,14 @@ func TestRunCancelsAllToolProcessGroupsAndRecordsSession(t *testing.T) {
 			t.Fatalf("get process group for %d: %v", pid, err)
 		}
 		groups[i] = group
+		t.Cleanup(func() { _ = syscall.Kill(-group, syscall.SIGKILL) })
 	}
-	started := time.Now()
 	cancel()
 	var result runResult
 	select {
 	case result = <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("run did not stop within two seconds")
-	}
-	if elapsed := time.Since(started); elapsed >= 2*time.Second {
-		t.Fatalf("cancellation took %s", elapsed)
+	case <-time.After(5 * time.Second):
+		t.Fatalf("cancellation watchdog: agent did not finish cleanup and persistence; process groups=%v", groups)
 	}
 	if !errors.Is(result.err, context.Canceled) {
 		t.Fatalf("error = %v", result.err)

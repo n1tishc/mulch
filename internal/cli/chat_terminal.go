@@ -44,6 +44,7 @@ type terminalChat struct {
 	started               time.Time
 	frame                 int
 	selection             int
+	secretInput           bool
 }
 
 func runTerminalChat(ctx context.Context, opts Options, control *chatControl, output *chatOutput) error {
@@ -111,8 +112,8 @@ func (m *terminalChat) submit(text string) tea.Cmd {
 		return nil
 	}
 	m.scroll = 0
-	m.append("\nYou › " + text + "\n")
 	if strings.HasPrefix(text, "/") {
+		m.append("\nYou › " + text + "\n")
 		if m.busy {
 			switch text {
 			case "/inspect", "/inspect --no-open", "/web", "/web --no-open":
@@ -139,10 +140,18 @@ func (m *terminalChat) submit(text string) tea.Cmd {
 			m.append("No task is running.\n")
 			return nil
 		}
+		if text == "/api-key" {
+			m.secretInput = true
+			m.append("Enter the API key for " + m.control.provider + ". Input is hidden; press Enter to save or Esc to cancel.\n")
+			return nil
+		}
 		result, exit, err := m.control.command(m.ctx, text)
 		if err != nil {
 			m.append(err.Error() + "\n")
 		} else {
+			if text == "/new" || text == "/clear" {
+				m.transcript = ""
+			}
 			m.append(result)
 		}
 		if exit {
@@ -150,9 +159,14 @@ func (m *terminalChat) submit(text string) tea.Cmd {
 		}
 		return nil
 	}
+	m.append("\nYou › " + text + "\n")
 	if m.busy {
 		m.queued = append(m.queued, text)
 		m.append("Queued for the next task.\n")
+		return nil
+	}
+	if profile := m.control.activeProvider(); m.control.llmFactory != nil && (profile == nil || profile.APIKey == "") {
+		m.append("No API key is configured for this provider. Use /api-key.\n")
 		return nil
 	}
 	m.busy = true
@@ -211,6 +225,10 @@ func (m *terminalChat) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.input = nil
 				m.cursor = 0
+				if m.secretInput {
+					m.secretInput = false
+					m.append("API key entry cancelled.\n")
+				}
 			}
 		case tea.KeyCtrlD:
 			if m.busy {
@@ -237,6 +255,17 @@ func (m *terminalChat) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 			text := string(m.input)
+			if m.secretInput {
+				m.input = nil
+				m.cursor = 0
+				m.secretInput = false
+				if err := m.control.setAPIKey(text); err != nil {
+					m.append("Could not save API key: " + err.Error() + "\n")
+				} else {
+					m.append("API key saved for " + m.control.provider + " and applied.\n")
+				}
+				return m, nil
+			}
 			if matches := m.matches(); len(matches) > 0 {
 				text = matches[min(m.selection, len(matches)-1)]
 			}
@@ -342,10 +371,18 @@ func (m *terminalChat) View() string {
 	if m.busy {
 		state = fmt.Sprintf("%s working %s · Esc stop · %d queued", []string{"◐", "◓", "◑", "◒"}[m.frame%4], time.Since(m.started).Round(time.Second), len(m.queued))
 	}
-	header := accent.Bold(true).Render("mulch") + "  " + terminalSafe(m.control.recorded.Model) + dim.Render("  ·  "+string(m.control.config.Mode))
+	identity := m.control.config.Model
+	if m.control.provider != "" {
+		identity = m.control.provider + "/" + identity
+	}
+	header := accent.Bold(true).Render("mulch") + "  " + terminalSafe(identity) + dim.Render("  ·  "+string(m.control.config.Mode))
 	header = ansi.Truncate(header, width, "…") + "\n" + dim.Render(ansi.Truncate(terminalSafe(m.control.recorded.Workdir), width, "…"))
 	before := terminalSafe(string(m.input[:m.cursor]))
 	after := terminalSafe(string(m.input[m.cursor:]))
+	if m.secretInput {
+		before = strings.Repeat("•", len([]rune(before)))
+		after = strings.Repeat("•", len([]rune(after)))
+	}
 	cursor := " "
 	if len(after) > 0 {
 		chars := []rune(after)
@@ -356,7 +393,11 @@ func (m *terminalChat) View() string {
 	}
 	editor := before + lipgloss.NewStyle().Reverse(true).Render(cursor) + after
 	if len(m.input) == 0 {
-		editor += dim.Render(" Describe a task or type / for commands")
+		placeholder := " Describe a task or type / for commands"
+		if m.secretInput {
+			placeholder = " Paste or type API key (hidden)"
+		}
+		editor += dim.Render(placeholder)
 	}
 	inputLines := strings.Split(ansi.Hardwrap(editor, width-2, true), "\n")
 	// Show the region around the cursor when composing a long multiline prompt.
@@ -399,9 +440,78 @@ func (m *terminalChat) View() string {
 	scroll := min(m.scroll, max(0, len(lines)-bodyHeight))
 	bottom := len(lines) - scroll
 	top := max(0, bottom-bodyHeight)
-	body := strings.Join(lines[top:bottom], "\n")
+	body := renderTerminalTranscript(strings.Join(lines[top:bottom], "\n"), accent, dim)
 	for n := bottom - top; n < bodyHeight; n++ {
 		body += "\n"
 	}
 	return lipgloss.NewStyle().Padding(0, 2).Render(header + "\n" + dim.Render(strings.Repeat("─", width)) + "\n" + body + "\n" + accent.Render(ansi.Truncate(state, width, "…")) + "\n" + dim.Render(strings.Repeat("─", width)) + "\n" + editor + "\n" + menu + footer)
+}
+
+func renderTerminalTranscript(text string, accent, dim lipgloss.Style) string {
+	assistant := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
+	user := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("108"))
+	code := lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Background(lipgloss.Color("236"))
+	lines := strings.Split(text, "\n")
+	inCode := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "```"):
+			inCode = !inCode
+			lines[i] = dim.Render(strings.Repeat("─", min(32, max(8, len(trimmed)+8))))
+		case inCode:
+			lines[i] = code.Render(line)
+		case strings.HasPrefix(line, "You ›"):
+			lines[i] = user.Render("YOU") + accent.Render("  › ") + strings.TrimSpace(strings.TrimPrefix(line, "You ›"))
+		case trimmed == "Mulch":
+			lines[i] = assistant.Render("MULCH")
+		case strings.HasPrefix(trimmed, "[tool:") || strings.HasPrefix(trimmed, "[done:") || strings.HasPrefix(trimmed, "[failed:"):
+			lines[i] = dim.Render(trimmed)
+		case strings.HasPrefix(trimmed, "### "):
+			lines[i] = assistant.Render(strings.TrimPrefix(trimmed, "### "))
+		case strings.HasPrefix(trimmed, "## "):
+			lines[i] = assistant.Bold(true).Render(strings.TrimPrefix(trimmed, "## "))
+		case strings.HasPrefix(trimmed, "# "):
+			lines[i] = accent.Bold(true).Render(strings.TrimPrefix(trimmed, "# "))
+		case strings.HasPrefix(trimmed, "- "):
+			lines[i] = accent.Render("•") + " " + renderTerminalInline(strings.TrimPrefix(trimmed, "- "))
+		default:
+			lines[i] = renderTerminalInline(line)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderTerminalInline(line string) string {
+	strong := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
+	inlineCode := lipgloss.NewStyle().Foreground(lipgloss.Color("230")).Background(lipgloss.Color("238"))
+	var out strings.Builder
+	for len(line) > 0 {
+		boldAt, codeAt := strings.Index(line, "**"), strings.Index(line, "`")
+		if boldAt >= 0 && (codeAt < 0 || boldAt < codeAt) {
+			out.WriteString(line[:boldAt])
+			line = line[boldAt+2:]
+			if end := strings.Index(line, "**"); end >= 0 {
+				out.WriteString(strong.Render(line[:end]))
+				line = line[end+2:]
+				continue
+			}
+			out.WriteString("**")
+			continue
+		}
+		if codeAt >= 0 {
+			out.WriteString(line[:codeAt])
+			line = line[codeAt+1:]
+			if end := strings.Index(line, "`"); end >= 0 {
+				out.WriteString(inlineCode.Render(" " + line[:end] + " "))
+				line = line[end+1:]
+				continue
+			}
+			out.WriteString("`")
+			continue
+		}
+		out.WriteString(line)
+		break
+	}
+	return out.String()
 }

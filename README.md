@@ -2,9 +2,25 @@
 
 Mulch is a small Go coding harness that records durable sessions, scores working context asynchronously, and can intervene when its configured policy detects degraded context. Run `mulch` for the interactive terminal or `mulch web` for the local browser workspace. Both use the same agent runtime; the browser interface is embedded in the native binary.
 
+## Try the project
+
+Source-visible, with no reuse license granted. Public availability is not permission to redistribute or relicense this project's code; third-party dependencies retain their own licenses.
+
+Mulch's portfolio scope is deliberately small: a working coding loop, durable conversations, and inspectable context-repair experiments. It supports configured OpenAI Chat Completions-compatible endpoints, not every provider's native API. Experimental repair modes do not have a demonstrated correctness advantage.
+
+For a no-key, synthetic walkthrough of the real runtime and browser UI, use Go 1.25+ and Node 24.8.0 (the CI frontend version):
+
+```sh
+make ui
+go run ./ui/testserver
+# Open http://127.0.0.1:4144; Ctrl+C stops the temporary fixture.
+```
+
+The fixture makes no provider calls; its write tool uses a disposable workspace. Do not select a real project directory in the fixture. Follow the [five-minute demo](docs/portfolio-demo.md) for the live coding segment and architecture talking points. See [current release scope](docs/release-readiness.md) and [verification evidence](docs/release-verification.md). The [larger provider roadmap](docs/provider-roadmap.md) is deferred, not a prerequisite for this release.
+
 ## Current status and recent changes
 
-**Release status (2026-09-08): this work has not published a public GitHub release or npm package, or created a release tag.** Native binaries, the curl installer, npm/pnpm packaging, and a manual draft-release workflow are prepared locally. Preparing or testing packages is not publication. See [release preparation and verification](docs/releases.md).
+**Release status (2026-09-13): this work has not published a public GitHub release or npm package, or created a release tag.** Native binaries, the curl installer, npm/pnpm packaging, and a manual draft-release workflow are prepared locally. Preparing or testing packages is not publication. See [release preparation and verification](docs/releases.md).
 
 Recent implementation work includes:
 
@@ -71,7 +87,7 @@ go build -o dist/mulch ./cmd/mulch
 
 Configure provider credentials below first (or use `.env` in the directory where you launch Mulch). Running `mulch` with no subcommand opens the interactive terminal interface; `mulch chat` is an explicit alias. It includes an editable multiline prompt, input history, a slash-command menu, a scrollable transcript, streamed responses, tool results, and task status. Enter sends, Alt+Enter or Ctrl+J adds a newline, Tab completes commands, and PgUp/PgDn scrolls. Esc or Ctrl+C interrupts the current task and clears queued follow-ups; `/exit` or Ctrl+D exits. Pasted text stays in the editor until you send it.
 
-Use `/help`, `/new`, `/sessions`, `/resume ID`, `/status`, `/model NAME`, `/mode`, `/rename NAME`, `/history`, and `/diff` inside the app. New sessions preserve previous conversations; changing the model starts a fresh session. Messages submitted while working queue for the next task. See the [terminal workflow and command reference](docs/terminal-workflow.html).
+Use `/help`, `/new`, `/sessions`, `/resume ID`, `/status`, `/provider`, `/model`, `/mode`, `/api-key`, `/rename NAME`, `/history`, and `/diff` inside the app. `/provider NAME` and `/model NAME` change the next turn without dropping conversation history; `/new` is the explicit clean-session boundary. Messages submitted while working queue for the next task. See the [terminal workflow and command reference](docs/terminal-workflow.html).
 
 Reopen a conversation with `./dist/mulch --resume SESSION_ID`. It uses the saved model and working directory. Chat supports `--db`, `--policy`, `--no-intervene`, and `--race`; choose the same repair flags when reopening. It runs locally through the shared runtime, independently of daemon submission. Each task retains the runtime's turn limit; idle chat makes no model calls. The existing `run` command remains available for single-task execution. Redirected input/output or `TERM=dumb` uses the simpler line interface.
 
@@ -87,7 +103,18 @@ cd /path/to/project
 mulch                    # or: mulch web
 ```
 
-Settings live in `~/.config/mulch/config.json` (`XDG_CONFIG_HOME` or `MULCH_CONFIG` can override the location). `mulch config path` prints the path; `mulch config unset KEY` removes a value. The JSON keys are `api-key`, `base-url`, `model`, `judge-model`, `embedding-api-key`, `embedding-base-url`, and `embedding-model`. The file is stored with owner-only permissions on Unix; keys are local plaintext, not encrypted. For automation, pipe a key to `mulch config set api-key --stdin`. Restart Mulch after changes. Environment variables and `.env` override saved values; explicit launch flags take precedence. Relevance scoring remains optional and uses separate embedding credentials. See [the provider spike](docs/provider-spike.md).
+To keep several OpenAI-compatible endpoints available at once, save named profiles:
+
+```sh
+mulch config set provider zen
+mulch config set provider.zen.base-url https://opencode.ai/zen/go/v1
+mulch config set provider.zen.models glm-5.3-flash,glm-5
+mulch config set provider.zen.api-key  # hidden prompt
+```
+
+Settings live in `~/.config/mulch/config.json` (`XDG_CONFIG_HOME` or `MULCH_CONFIG` can override the location). `mulch config path` prints the path; `mulch config unset KEY` removes a value. Named profiles use `provider`, `provider.NAME.api-key`, `provider.NAME.base-url`, and `provider.NAME.models`; the original flat keys remain valid. The file is stored with owner-only permissions on Unix; keys are local plaintext, not encrypted. For automation, pipe a key to `mulch config set provider.NAME.api-key --stdin`. Precedence is explicit launch flag, environment or `.env`, active named profile, legacy flat setting, then built-in default. A named profile's first configured model overrides a legacy flat `model`. Relevance scoring remains optional and uses separate embedding credentials. See [the provider spike](docs/provider-spike.md).
+
+Web mode can start without credentials for browsing saved history. Selecting a configured provider enables new tasks and follow-ups without a restart; selecting an uncredentialed profile restores read-only execution with setup guidance. Each accepted task keeps its provider, model, and mode even if you change settings while it runs. Slash settings are runtime-only in the current implementation; `mulch config` saves future-launch defaults.
 
 Open the browser workspace from the project you want Mulch to work on:
 
@@ -102,7 +129,7 @@ mulch web --session SESSION_ID
 
 Use the absolute path to your built binary if `mulch` is not on PATH. The web launcher binds one loopback listener on an available port, prints its URL, and opens the browser. Confirm the working-directory field before sending. With credentials present, Send starts or continues a task; while running, Stop and Steer next turn control daemon-owned work. Closing a tab leaves the task running. Without credentials, saved traces remain readable. `mulch serve --addr 127.0.0.1:4141` remains the explicit server command.
 
-Use `--race` for candidate comparisons, `--no-intervene` for scoring only, or `--policy path.json` for a configured ladder. Model and mode are selected at launch; historical views use each run's recorded configuration. `/inspect` in the terminal opens a read-only view whose server ends when the terminal exits. See the [web workflow, commands, and offline testing guide](docs/web-workflow.html).
+Use `--race` for candidate comparisons, `--no-intervene` for scoring only, or `--policy path.json` for a configured ladder. In the browser composer, `/provider`, `/model`, and `/mode` list or switch runtime choices for subsequent turns; `/new` clears into a new conversation. Historical runs retain their recorded configuration. `/inspect` in the terminal opens a read-only view whose server ends when the terminal exits. See the [web workflow, commands, and offline testing guide](docs/web-workflow.html).
 
 ## Test the CLI and Web locally
 

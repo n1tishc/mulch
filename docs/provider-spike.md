@@ -20,9 +20,11 @@ Both values can be overridden, so the gate is not coupled to OpenCode Go or to a
 The test proves that the selected provider adapter:
 
 - returns assistant text and a provider-assigned tool-call identifier without executing the supplied tool;
-- reports the same positive token counts in the provider finish chunk and final result;
+- reports positive input and output token counts through the production adapter (exact fixture counts are checked offline);
 - accepts the exact assistant response blocks and tool-call identifier on the next request; and
-- returns `context.Canceled` less than 500 ms after a streaming request is cancelled.
+- returns `context.Canceled` within a two-second watchdog after streamed text begins and the request is cancelled.
+
+The gate calls `provider.NewOpenAI(...).Stream`, supplies a synthetic session ID on every request, and replays Mulch's canonical messages. This exercises the production `x-opencode-session` header and conversion code. Provider errors redact the configured API key. The cancellation watchdog is a hang detector, not a latency service-level objective.
 
 ## Decision
 

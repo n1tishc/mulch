@@ -114,10 +114,8 @@ func TestChatSessionCommandsPreserveHistoryAndRejectUnknown(t *testing.T) {
 	if len(fake.requests) != 3 {
 		t.Fatalf("commands reached provider: %d requests", len(fake.requests))
 	}
-	for _, request := range fake.requests {
-		if len(request.Messages) != 2 {
-			t.Fatal("new session retained old messages")
-		}
+	if len(fake.requests[0].Messages) != 2 || len(fake.requests[1].Messages) != 2 || len(fake.requests[2].Messages) != 4 {
+		t.Fatal("new session or in-conversation model history semantics are wrong")
 	}
 	if fake.requests[2].Model != "test-other" {
 		t.Fatal("model command was not applied")
@@ -130,7 +128,7 @@ func TestChatSessionCommandsPreserveHistoryAndRejectUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	sessions, err := store.Sessions(t.Context())
-	if err != nil || len(sessions) != 3 {
+	if err != nil || len(sessions) != 2 {
 		t.Fatalf("saved sessions: %#v %v", sessions, err)
 	}
 	if sessions[0].Label != "first" {

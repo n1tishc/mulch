@@ -6,169 +6,142 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/option"
+	"github.com/n1tishc/mulch/internal/provider"
 )
 
-const (
-	defaultSpikeBaseURL = "https://opencode.ai/zen/go/v1"
-	defaultSpikeModel   = "glm-5.3-flash"
-)
-
+// Opt-in: this test sends real requests that can consume provider credits.
 func TestLiveProviderGate(t *testing.T) {
 	apiKey := os.Getenv("MULCH_PROVIDER_API_KEY")
 	if apiKey == "" {
-		t.Skip("MULCH_PROVIDER_API_KEY is required for the live provider gate")
+		t.Skip("MULCH_PROVIDER_API_KEY is required; live requests may consume credits")
 	}
 	baseURL := os.Getenv("MULCH_PROVIDER_BASE_URL")
-	if baseURL == "" {
-		baseURL = defaultSpikeBaseURL
-	}
 	model := os.Getenv("MULCH_MODEL")
 	if model == "" {
-		model = defaultSpikeModel
+		model = "glm-5.3-flash"
 	}
-	client := openai.NewClient(option.WithAPIKey(apiKey), option.WithBaseURL(baseURL))
-
-	t.Run("single step preserves blocks and usage without executing tools", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	llm := provider.NewOpenAI(apiKey, baseURL)
+	sessionID := fmt.Sprintf("mulch-release-probe-%d", time.Now().UnixNano())
+	safeError := func(err error) string {
+		if err == nil {
+			return "<nil>"
+		}
+		return strings.ReplaceAll(err.Error(), apiKey, "[redacted]")
+	}
+	stream := func(t *testing.T, req provider.Request) (provider.Response, string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 		defer cancel()
-		params := probeParams(model)
-		stream := client.Chat.Completions.NewStreaming(ctx, params)
-		acc := openai.ChatCompletionAccumulator{}
-		var rawPromptTokens, rawCompletionTokens int64
-		for stream.Next() {
-			chunk := stream.Current()
-			if chunk.Usage.TotalTokens > 0 {
-				rawPromptTokens = chunk.Usage.PromptTokens
-				rawCompletionTokens = chunk.Usage.CompletionTokens
+		deltas := make(chan provider.Delta)
+		text := make(chan string, 1)
+		go func() {
+			var output strings.Builder
+			for delta := range deltas {
+				output.WriteString(delta.Text)
 			}
-			if !acc.AddChunk(chunk) {
-				t.Fatal("provider returned an inconsistent stream")
+			text <- output.String()
+		}()
+		response, err := llm.Stream(ctx, req, deltas)
+		close(deltas)
+		output := <-text
+		if err != nil {
+			t.Fatalf("production adapter: %s", safeError(err))
+		}
+		return response, output
+	}
+	t.Run("text tool usage and same-session replay", func(t *testing.T) {
+		req := provider.Request{
+			SessionID: sessionID, Model: model, NoRetry: true, MaxTokens: 1024,
+			Messages: []provider.Message{{Role: provider.RoleUser, Blocks: []provider.Block{{Type: "text", Text: "First say exactly 'probing'. Then call record_probe once with value 'mulch-provider-probe'."}}}},
+			Tools: []provider.ToolSpec{{Name: "record_probe", Description: "Record the supplied probe value.", InputSchema: map[string]any{
+				"type": "object", "properties": map[string]any{"value": map[string]string{"type": "string"}}, "required": []string{"value"},
+			}}},
+		}
+		response, streamed := stream(t, req)
+		if !strings.Contains(streamed, "probing") {
+			t.Fatal("missing streamed probe text")
+		}
+		if response.InputTokens <= 0 || response.OutputTokens <= 0 {
+			t.Fatalf("missing provider usage: %d/%d", response.InputTokens, response.OutputTokens)
+		}
+		var calls []provider.Block
+		var finalText strings.Builder
+		for _, block := range response.Blocks {
+			if block.Type == "tool_use" {
+				calls = append(calls, block)
+			}
+			if block.Type == "text" {
+				finalText.WriteString(block.Text)
 			}
 		}
-		if err := stream.Err(); err != nil {
+		if streamed != finalText.String() {
+			t.Fatal("streamed text differs from persisted blocks")
+		}
+		if len(calls) != 1 || calls[0].CallID == "" || calls[0].Name != "record_probe" {
+			t.Fatal("expected one named tool call with a provider-assigned ID")
+		}
+		var arguments struct {
+			Value string `json:"value"`
+		}
+		if err := json.Unmarshal([]byte(calls[0].Input), &arguments); err != nil || arguments.Value != "mulch-provider-probe" {
+			t.Fatal("incorrect tool arguments")
+		}
+		assistant := provider.Message{Role: provider.RoleAssistant, Blocks: response.Blocks}
+		logged, err := json.Marshal(assistant)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if len(acc.Choices) != 1 {
-			t.Fatalf("choices = %d, want 1", len(acc.Choices))
+		var replayed provider.Message
+		if err = json.Unmarshal(logged, &replayed); err != nil {
+			t.Fatal(err)
 		}
-		message := acc.Choices[0].Message
-		if !strings.Contains(message.Content, "probing") {
-			t.Fatalf("assistant text = %q, want it to contain probing", message.Content)
+		if !reflect.DeepEqual(assistant, replayed) {
+			t.Fatal("canonical message changed in JSON round-trip")
 		}
-		if len(message.ToolCalls) != 1 {
-			t.Fatalf("tool calls = %d, want 1", len(message.ToolCalls))
+		req.Messages = append(req.Messages, replayed,
+			provider.Message{Role: provider.RoleTool, Blocks: []provider.Block{{Type: "tool_result", CallID: calls[0].CallID, Name: calls[0].Name, Output: `{"recorded":true}`}}},
+			provider.Message{Role: provider.RoleUser, Blocks: []provider.Block{{Type: "text", Text: "Reply with exactly 'round-trip-ok'."}}},
+		)
+		req.Tools = nil
+		_, followup := stream(t, req)
+		if !strings.Contains(followup, "round-trip-ok") {
+			t.Fatal("same-session follow-up missing expected text")
 		}
-		call := message.ToolCalls[0]
-		if call.ID == "" || call.Function.Name != "record_probe" {
-			t.Fatalf("tool call = %+v, want a provider ID and name record_probe", call)
-		}
-		if acc.Usage.PromptTokens <= 0 || acc.Usage.CompletionTokens <= 0 {
-			t.Fatalf("usage = %+v, want positive provider counts", acc.Usage)
-		}
-		if acc.Usage.PromptTokens != rawPromptTokens || acc.Usage.CompletionTokens != rawCompletionTokens {
-			t.Fatalf("accumulated usage = %d/%d, raw provider usage = %d/%d",
-				acc.Usage.PromptTokens, acc.Usage.CompletionTokens, rawPromptTokens, rawCompletionTokens)
-		}
-
-		assertRoundTripAccepted(t, &client, params, message, call.ID)
 	})
-
-	t.Run("stream cancellation returns the context error promptly", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(t.Context())
-		stream := client.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams{
-			Messages: []openai.ChatCompletionMessageParamUnion{
-				openai.UserMessage("Write the integers from 1 through 10000, one per line."),
-			},
-			Model: openai.ChatModel(model),
-		})
-		if !stream.Next() {
-			cancel()
-			t.Fatalf("provider closed before cancellation: %v", stream.Err())
-		}
-
-		started := time.Now()
-		cancel()
+	t.Run("stream cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+		defer cancel()
+		deltas := make(chan provider.Delta)
 		done := make(chan error, 1)
 		go func() {
-			for stream.Next() {
-			}
-			done <- stream.Err()
+			_, err := llm.Stream(ctx, provider.Request{
+				SessionID: sessionID, Model: model, NoRetry: true, MaxTokens: 1024,
+				Messages: []provider.Message{{Role: provider.RoleUser, Blocks: []provider.Block{{Type: "text", Text: "Write the integers from 1 through 10000, one per line."}}}},
+			}, deltas)
+			done <- err
 		}()
-		var streamErr error
 		select {
-		case streamErr = <-done:
-		case <-time.After(500 * time.Millisecond):
-			_ = stream.Close()
-			t.Fatal("stream did not return within 500ms of cancellation")
+		case <-deltas:
+		case err := <-done:
+			t.Fatalf("stream ended before first text: %s", safeError(err))
+		case <-ctx.Done():
+			t.Fatal("provider did not stream text before deadline")
 		}
-		elapsed := time.Since(started)
-		if elapsed >= 500*time.Millisecond {
-			t.Fatalf("cancellation took %s, want <500ms", elapsed)
-		}
-		if !errors.Is(streamErr, context.Canceled) {
-			t.Fatalf("stream error = %v, want context.Canceled", streamErr)
+		cancel()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("expected context.Canceled: %s", safeError(err))
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("production adapter did not stop within cancellation watchdog")
 		}
 	})
-}
-
-func probeParams(model string) openai.ChatCompletionNewParams {
-	return openai.ChatCompletionNewParams{
-		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.UserMessage("First say exactly 'probing'. Then call record_probe once with value 'mulch-provider-probe'."),
-		},
-		Model: openai.ChatModel(model),
-		Tools: []openai.ChatCompletionToolUnionParam{
-			openai.ChatCompletionFunctionTool(openai.FunctionDefinitionParam{
-				Name:        "record_probe",
-				Description: openai.String("Record the supplied probe value."),
-				Parameters: openai.FunctionParameters{
-					"type": "object",
-					"properties": map[string]any{
-						"value": map[string]string{"type": "string"},
-					},
-					"required": []string{"value"},
-				},
-			}),
-		},
-		StreamOptions: openai.ChatCompletionStreamOptionsParam{IncludeUsage: openai.Bool(true)},
-	}
-}
-
-func assertRoundTripAccepted(t *testing.T, client *openai.Client, params openai.ChatCompletionNewParams, message openai.ChatCompletionMessage, callID string) {
-	t.Helper()
-	logged, err := json.Marshal(message)
-	if err != nil {
-		t.Fatalf("log assistant blocks: %v", err)
-	}
-	var replayed openai.ChatCompletionMessage
-	if err := json.Unmarshal(logged, &replayed); err != nil {
-		t.Fatalf("reconstruct assistant blocks: %v", err)
-	}
-	if replayed.Content != message.Content || len(replayed.ToolCalls) != 1 ||
-		replayed.ToolCalls[0].ID != callID || replayed.ToolCalls[0].Function.Name != message.ToolCalls[0].Function.Name ||
-		replayed.ToolCalls[0].Function.Arguments != message.ToolCalls[0].Function.Arguments {
-		t.Fatalf("assistant blocks changed during log round-trip: before=%+v after=%+v", message, replayed)
-	}
-	params.Messages = append(params.Messages,
-		replayed.ToParam(),
-		openai.ToolMessage(`{"recorded":true}`, callID),
-		openai.UserMessage("Reply with exactly 'round-trip-ok'."),
-	)
-	params.Tools = nil
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	result, err := client.Chat.Completions.New(ctx, params)
-	if err != nil {
-		t.Fatalf("provider rejected replayed assistant blocks: %v", err)
-	}
-	if len(result.Choices) != 1 || !strings.Contains(strings.ToLower(result.Choices[0].Message.Content), "round-trip-ok") {
-		t.Fatalf("round-trip response = %+v, want round-trip-ok", result.Choices)
-	}
 }

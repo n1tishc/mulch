@@ -95,3 +95,14 @@ test("workspace folders persist, trace links work, and deletion keeps project fi
   await page.screenshot({path:"test-results/mobile-trace.png",fullPage:true});
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
 });
+
+test("slash settings switch subsequent turns and new clears the session",async({page,request})=>{
+  await page.goto("/");
+  await page.getByLabel("Message",{exact:true}).fill("/model fixture-alt");await page.getByRole("button",{name:"Send message"}).click();await expect(page.locator(".status-notice")).toContainText("fixture-alt");
+  await page.getByLabel("Message",{exact:true}).fill("First model-switched turn");await page.getByRole("button",{name:"Send message"}).click();await expect(page.locator(".task-end")).toContainText("completed");
+  const id=new URL(page.url()).searchParams.get("session")!;
+  await page.getByLabel("Message",{exact:true}).fill("/mode plain");await page.getByRole("button",{name:"Send message"}).click();await expect(page.locator(".status-notice")).toContainText("plain");
+  await page.getByLabel("Message",{exact:true}).fill("Second switched turn");await page.getByRole("button",{name:"Send message"}).click();await expect(page.locator(".task-end")).toHaveCount(2);expect(new URL(page.url()).searchParams.get("session")).toBe(id);
+  const events=await(await request.get(`/api/sessions/${id}/events`)).json();expect(events.filter((e:{type:string,payload:{model?:string}})=>e.type==="run.config"&&e.payload.model==="fixture-alt")).toHaveLength(2);
+  await page.getByLabel("Message",{exact:true}).fill("/new");await page.getByRole("button",{name:"Send message"}).click();await expect(page.getByRole("heading",{name:"What are we working on?"})).toBeVisible();expect(new URL(page.url()).searchParams.get("session")).toBeNull();await expect(page.getByLabel("Message",{exact:true})).toHaveValue("");
+});

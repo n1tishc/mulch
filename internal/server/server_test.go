@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -46,6 +47,17 @@ func TestRecordedSessionReadAPIAndEmbeddedViewer(t *testing.T) {
 		}
 		if !strings.Contains(response.Body.String(), `<div id="root"></div>`) {
 			t.Fatalf("body = %q", response.Body.String())
+		}
+		assets := regexp.MustCompile(`(?:src|href)="(/assets/[^"]+)"`).FindAllStringSubmatch(response.Body.String(), -1)
+		if len(assets) < 2 {
+			t.Fatal("embedded index lacks script and stylesheet references")
+		}
+		for _, asset := range assets {
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, asset[1], nil))
+			if w.Code != http.StatusOK || w.Body.Len() == 0 || strings.Contains(w.Header().Get("Content-Type"), "text/html") {
+				t.Fatalf("embedded asset %s: status=%d content-type=%s", asset[1], w.Code, w.Header().Get("Content-Type"))
+			}
 		}
 	})
 

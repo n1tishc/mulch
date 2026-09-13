@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -69,10 +70,11 @@ type SessionSummary struct {
 }
 
 type Server struct {
-	config  Config
-	store   Store
-	control Control
-	handler http.Handler
+	config   Config
+	configMu sync.RWMutex
+	store    Store
+	control  Control
+	handler  http.Handler
 }
 
 func New(store Store, controls ...Control) *Server {
@@ -85,7 +87,8 @@ func New(store Store, controls ...Control) *Server {
 	mux.HandleFunc("GET /api/workspaces", s.workspaces)
 	mux.HandleFunc("POST /api/workspaces", s.workspaces)
 	mux.HandleFunc("DELETE /api/sessions/{id}/history", s.deleteConversation)
-	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.config, nil) })
+	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.currentConfig(), nil) })
+	mux.HandleFunc("PATCH /api/config", s.runtimeConfig)
 	mux.HandleFunc("GET /api/sessions/{id}", s.sessionDetail)
 	mux.HandleFunc("POST /api/sessions/{id}/resume", s.resume)
 	mux.HandleFunc("PATCH /api/sessions/{id}", s.rename)
@@ -119,7 +122,7 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request.Opts.Workdir == "" {
-		request.Opts.Workdir = s.config.Workspace
+		request.Opts.Workdir = s.currentConfig().Workspace
 	}
 	s.mutate(w, r, request.RequestID, request, func(ctx context.Context) (string, error) { return s.control.Start(ctx, request) })
 }
