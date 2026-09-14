@@ -2,7 +2,7 @@
 
 Scope decision: 2026-09-13. Target: a small, demonstrable coding harness, not a full multi-provider platform.
 
-Current stage: public release candidate preparation on `release/v0.1.0-rc1`, authorized by the owner. All six local gates passed in the preceding finishing pass; the candidate adds production credential-error redaction and safe-use documentation. Publication requires green CI on the actual candidate commit and matching tagged artifacts. See the [verification evidence](release-verification.md) and [release-branch CI](https://github.com/n1tishc/mulch/actions/workflows/ci.yml?query=branch%3Arelease%2Fv0.1.0-rc1).
+Current stage: v0.1.0 public GitHub release. All six local gates and the release-candidate CI passed; the release includes production credential-error redaction and safe-use documentation. npm-registry publication remains a separate, optional step. See the [verification evidence](release-verification.md) and [release-branch CI](https://github.com/n1tishc/mulch/actions/workflows/ci.yml?query=branch%3Arelease%2Fv0.1.0-rc1).
 
 ## Release contract
 

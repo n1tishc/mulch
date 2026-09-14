@@ -20,7 +20,7 @@ The fixture makes no provider calls; its write tool uses a disposable workspace.
 
 ## Current status and recent changes
 
-**Release status (2026-09-13): this work has not published a public GitHub release or npm package, or created a release tag.** Native binaries, the curl installer, npm/pnpm packaging, and a manual draft-release workflow are prepared locally. Preparing or testing packages is not publication. See [release preparation and verification](docs/releases.md).
+**Release status (2026-09-13): v0.1.0 is the first public GitHub release.** Native binaries and checksums are distributed through GitHub Releases. The npm package is prepared and tested but is not published; preparing or attaching package tarballs is not npm-registry publication. See [release preparation and verification](docs/releases.md).
 
 Recent implementation work includes:
 
@@ -38,18 +38,18 @@ The [first correctness pilot](docs/correctness-pilot-results.md) did **not** est
 
 ## Install
 
-**The following registry/release commands are intended for after publication.** Build from source below to test the current work.
+Install a native archive from the public GitHub release, or build from source:
 
 ```sh
 # macOS / Linux: checksummed native binary, no sudo or Node required
 curl -fsSL https://github.com/n1tishc/mulch/releases/latest/download/install.sh | sh
 
-# npm registry: platform-specific native binary, no install scripts
+# npm registry (not published yet): platform-specific native binary, no install scripts
 pnpm add -g @n1tishc/mulch
 mulch version
 ```
 
-For a project-local, pinned dependency, use `pnpm add -D @n1tishc/mulch@0.1.0` and `pnpm exec mulch version`. npm users can use `npm install -g @n1tishc/mulch`. The wrapper requires Node 22+ and optional dependencies enabled. The curl installer defaults to `$HOME/.local/bin`; override it with `MULCH_INSTALL_DIR`.
+After a separate npm-registry publication, a project-local pinned dependency can use `pnpm add -D @n1tishc/mulch@0.1.0` and `pnpm exec mulch version`; npm users can use `npm install -g @n1tishc/mulch`. The wrapper requires Node 22+ and optional dependencies enabled. The curl installer defaults to `$HOME/.local/bin`; override it with `MULCH_INSTALL_DIR`.
 
 The prepared release configuration builds CGO-free archives for Linux, macOS, and Windows on amd64 and arm64 plus `checksums.txt`. The installer verifies SHA-256 before replacing an existing executable. Linux shell execution also requires Bubblewrap (`bubblewrap`) and host support for its sandbox.
 
@@ -247,6 +247,6 @@ For comparisons with other harnesses, use the [research and comparison protocol]
 
 - Run larger, repeated evaluations that actually cross ladder thresholds and report confidence intervals.
 - Tune scoring deadlines and policy thresholds from those measured traces.
-- Publish the first tagged release and npm packages; add independently signed release artifacts.
+- Publish the prepared npm packages separately; add independently signed release artifacts.
 - Expand provider conformance coverage without coupling the harness to provider-owned environment variables.
 - Evaluate race mode against independently graded task outcomes, including cases where health and correctness disagree.

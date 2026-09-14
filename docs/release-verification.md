@@ -91,7 +91,7 @@ Verdict: the narrowed core is locally verified and suitable for a source-based p
 
 ## Public release candidate
 
-The owner subsequently authorized a release-candidate commit and a push to a new release branch, but no tag, GitHub publication or npm publication. The branch is `release/v0.1.0-rc1`. Earlier statements that no commit/push occurred describe the earlier local-only passes, not the candidate workflow. The owner chose to keep the project source-visible without granting a reuse license; no license file was added.
+The owner subsequently authorized the release-candidate branch and the v0.1.0 GitHub publication. The branch is `release/v0.1.0-rc1`; its candidate commit passed the complete GitHub Actions matrix before release. npm-registry publication remains separate and was not performed. The owner chose to keep the project source-visible without granting a reuse license; no license file was added.
 
 A final safety inspection found that an upstream authentication error could echo the configured API key into CLI output and persisted errors. `TestChatRedactsProviderCredentialErrors` reproduced the leak through the public CLI with a synthetic HTTP provider. The OpenAI adapter now redacts its configured key before returning an error while preserving error unwrapping. The regression checks both terminal output and JSON replay through CLI commands. This is targeted credential redaction, not a guarantee that arbitrary model/tool content is free of secrets.
 

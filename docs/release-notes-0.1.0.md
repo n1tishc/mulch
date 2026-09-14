@@ -1,6 +1,6 @@
 # Mulch 0.1.0 — draft release notes
 
-Status: prepared locally; not a published release. The final tag must match the package metadata and pass CI before publication.
+Status: public GitHub release. The `v0.1.0` tag matches the package metadata and its artifacts pass the release checks. The npm packages are attached for inspection but are not published to the npm registry.
 
 Mulch is a small Go coding harness with terminal and browser interfaces, durable conversations, and auditable context-repair experiments.
 
@@ -14,7 +14,7 @@ Mulch is a small Go coding harness with terminal and browser interfaces, durable
 - Reproducible offline tests, browser acceptance tests, race/cancellation checks, installer checks and six snapshot archive targets.
 - A [no-key synthetic walkthrough](portfolio-demo.md) for exploring the mechanics before configuring a live model.
 
-## Fixes in the release candidate
+## Fixes in this release
 
 Web execution can become ready after switching away from an uncredentialed startup profile. Named-profile models take precedence over legacy flat defaults. Task cancellation bounds inherited-pipe waits and verifies process-group cleanup. Live-provider checks exercise the production adapter, and packaging rejects missing embedded web assets.
 
@@ -32,7 +32,7 @@ Scoring and context repair remain experiments. The current pilot does not demons
 
 ## Install and verify
 
-Use the [source build](../README.md#install) until a public release exists. After publication, use the checksummed archive installer or optional npm wrapper described in [distribution](releases.md). See the [verification report](release-verification.md) for exact local evidence; cross-compilation alone does not establish native execution on all six targets.
+Use the checksummed GitHub archive installer or the [source build](../README.md#install). The optional npm wrapper described in [distribution](releases.md) is staged but not registry-published. See the [verification report](release-verification.md) for exact local and CI evidence; cross-compilation alone does not establish native execution on all six targets.
 
 ## Rollback
 
