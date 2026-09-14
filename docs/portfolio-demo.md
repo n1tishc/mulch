@@ -47,7 +47,7 @@ Then ask for an additional regression case in the same conversation. Independent
 - **Concurrency:** tool execution, cancellation, task snapshots and replay have regression coverage, including race tests and process-group stress.
 - **Evidence over claims:** a health score is not correctness. The pilot exposed limits; hidden graders and retained traces make those limits diagnosable.
 
-For evidence run `make contract`, `make web-test` and the full [release gates](release-readiness.md#verification-gates). The seeded demo is for explaining mechanics; the offline tests and independently checked live task serve different purposes.
+For evidence run `make contract`, `make web-test`, and the offline gates in the [release guide](releases.md). The seeded demo is for explaining mechanics; the offline tests and independently checked live task serve different purposes.
 
 ## Troubleshooting
 

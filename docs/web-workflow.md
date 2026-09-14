@@ -99,7 +99,7 @@ The initial full Go run hit an existing two-second process-cancellation timing l
 
 ## Before wider use
 
-Try the UI in a disposable clone with your configured model and inspect both edits and trace evidence. Live provider compatibility, long-running streams, network failures across daemon restarts, assistive-technology testing, and comparative correctness still deserve broader testing. Follow the [stress-testing protocol](stress-testing.html) before publication. This interface makes repair behavior inspectable; the [pilot results](correctness-pilot-results.html) still do not establish a correctness advantage.
+Try the UI in a disposable clone with your configured model and inspect both edits and trace evidence. Live provider compatibility, long-running streams, network failures across daemon restarts, assistive-technology testing, and comparative correctness still deserve broader testing. This interface makes repair behavior inspectable; the [pilot results](correctness-pilot-results.md) still do not establish a correctness advantage.
 
 ## Workspace folders, deletion, and execution trace
 

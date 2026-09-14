@@ -1,8 +1,12 @@
 .env
 .env.*
 !.env.example
+.DS_Store
+.impeccable/
+.local/
 .mulch-cache/
 dist/
+/eval-output/
 /mulch
 *.db
 *.db-shm
@@ -12,3 +16,20 @@ ui/dist/
 ui/*.tsbuildinfo
 ui/test-results/
 ui/playwright-report/
+
+# Maintainer-only product, research, and release working notes.
+/DESIGN.md
+/MULCH_BUILD_PLAN.md
+/PRODUCT.md
+/docs/cancellation-research.md
+/docs/eval-policy.md
+/docs/harness-comparison.md
+/docs/harness-differentiator.md
+/docs/provider-roadmap.md
+/docs/provider-spike.md
+/docs/release-notes-0.1.0.md
+/docs/release-readiness.md
+/docs/release-verification.md
+/docs/release-slices/
+/docs/stress-testing.md
+/docs/web-interface-plan.md

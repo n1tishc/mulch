@@ -1,6 +1,6 @@
 # Distribution and releases
 
-The current target is a [small portfolio release](release-readiness.md), not the deferred multi-provider platform. [Draft 0.1.0 notes](release-notes-0.1.0.md) and a [five-minute walkthrough](portfolio-demo.md) accompany it. Source/demo availability and native archives are sufficient for the portfolio; npm publication is optional.
+Mulch targets a small portfolio release rather than a broad multi-provider platform. A [five-minute walkthrough](portfolio-demo.md) accompanies the source and native archives; npm-registry publication is optional and separate.
 
 Mulch has one native implementation and one version per release. GoReleaser builds Linux, macOS, and Windows for amd64 and arm64. Archives have the explicit name `mulch_VERSION_GOOS_GOARCH.tar.gz` (Windows uses `.zip`). `checksums.txt` covers the archives. The curl installer is attached as `install.sh`.
 

@@ -1,4 +1,4 @@
-.PHONY: build test arch lint ui verify run release-dry docs-html
+.PHONY: build test arch lint ui verify run release-dry
 
 build:
 	go build ./cmd/mulch
@@ -26,9 +26,6 @@ run:
 release-dry:
 	node scripts/check-web-assets.mjs --tracked
 	goreleaser release --snapshot --clean
-
-docs-html:
-	node scripts/build-docs-html.mjs
 
 # Deterministic evidence for the context-repair contract; no provider key needed.
 .PHONY: contract distribution-test
