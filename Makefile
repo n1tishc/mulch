@@ -1,5 +1,8 @@
 .PHONY: build test arch lint ui verify run release-dry
 
+# Matches CI. Override with a local binary, e.g. make lint GOLANGCI_LINT=golangci-lint
+GOLANGCI_LINT ?= go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
+
 build:
 	go build ./cmd/mulch
 
@@ -13,7 +16,7 @@ ui:
 	cd ui && npm ci && npm test && npm run build
 
 lint:
-	golangci-lint run
+	$(GOLANGCI_LINT) run
 
 verify: arch lint ui
 	node scripts/check-web-assets.mjs
