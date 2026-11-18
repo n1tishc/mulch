@@ -102,7 +102,7 @@ func TestRunComparesModesWithinConcurrencyAndWritesReports(t *testing.T) {
 }
 
 func TestHiddenGradersRejectOriginalBugs(t *testing.T) {
-	for _, name := range []string{"invoice", "pagination"} {
+	for _, name := range []string{"invoice", "pagination", "ratelimit", "settings"} {
 		t.Run(name, func(t *testing.T) {
 			scenario, err := LoadScenario(filepath.Join("..", "..", "testdata", "scenarios", name+"-clean.yaml"))
 			if err != nil {
@@ -153,6 +153,105 @@ def all_rows(rows, batch_size):
         cursor = batch['next_cursor']
         if cursor is None:
             return result
+`},
+		"ratelimit": {
+			"limiter.py": `class TokenBucket:
+    def __init__(self, capacity, refill_per_second, clock):
+        if type(capacity) is not int or capacity <= 0:
+            raise ValueError('capacity must be a positive integer')
+        if type(refill_per_second) not in (int, float) or refill_per_second <= 0:
+            raise ValueError('refill_per_second must be a positive number')
+        self.capacity, self.rate, self.clock = capacity, refill_per_second, clock
+        self.level = float(capacity)
+        self.last = clock()
+
+    def _refill(self):
+        now = self.clock()
+        if now > self.last:
+            self.level = min(float(self.capacity), self.level + (now - self.last) * self.rate)
+            self.last = now
+
+    def tokens(self):
+        self._refill()
+        return self.level
+
+    def allow(self, cost=1):
+        if type(cost) is not int or not 1 <= cost <= self.capacity:
+            raise ValueError('cost must be an integer in [1, capacity]')
+        self._refill()
+        if self.level < cost:
+            return False
+        self.level -= cost
+        return True
+`, "middleware.py": `from limiter import TokenBucket
+
+
+class Limiter:
+    def __init__(self, capacity, refill_per_second, clock):
+        self.capacity, self.rate, self.clock = capacity, refill_per_second, clock
+        self.buckets = {}
+
+    def handle(self, client_id, cost=1):
+        if client_id not in self.buckets:
+            self.buckets[client_id] = TokenBucket(self.capacity, self.rate, self.clock)
+        return self.buckets[client_id].allow(cost)
+`},
+		"settings": {
+			"merge.py": `import copy
+
+
+def deep_merge(base, override):
+    result = {key: copy.deepcopy(value) for key, value in base.items()}
+    for key, value in override.items():
+        if value is None:
+            result.pop(key, None)
+        elif isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+`, "pairs.py": `import re
+
+
+def _value(text):
+    lowered = text.lower()
+    if lowered in ('true', 'false'):
+        return lowered == 'true'
+    if lowered == 'null':
+        return None
+    if re.fullmatch(r'[+-]?[0-9]+', text):
+        return int(text)
+    return text
+
+
+def parse(lines):
+    result = {}
+    for number, line in enumerate(lines, 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        if '=' not in line:
+            raise ValueError(f'line {number}: missing "="')
+        key, value = line.split('=', 1)
+        parts = key.strip().split('.')
+        if not key.strip() or any(not part for part in parts):
+            raise ValueError(f'line {number}: empty key')
+        node = result
+        for part in parts[:-1]:
+            if not isinstance(node.get(part), dict):
+                node[part] = {}
+            node = node[part]
+        node[parts[-1]] = _value(value.strip())
+    return result
+`, "settings.py": `from merge import deep_merge
+from pairs import parse
+
+
+def resolve(defaults, layers, lines):
+    result = deep_merge({}, defaults)
+    for layer in layers:
+        result = deep_merge(result, layer)
+    return deep_merge(result, parse(lines))
 `},
 	}
 	for name, files := range implementations {

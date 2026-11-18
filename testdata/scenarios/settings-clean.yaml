@@ -1,0 +1,6 @@
+name: settings-clean
+task: Repair the settings merge, pair parser and resolver to satisfy SPEC.md. Inspect the specification, all three implementation files and the public tests before editing. Run the public tests and add edge-case coverage for copying, deletion, precedence and parse errors. Do not change SPEC.md. Explain the final fix.
+workdir_fixture: ../fixtures/settings
+grader: ../graders/settings.py
+max_turns: 16
+protected_files: [SPEC.md]

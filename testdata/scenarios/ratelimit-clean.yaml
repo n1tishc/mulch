@@ -1,0 +1,6 @@
+name: ratelimit-clean
+task: Repair the rate limiter and its per-client middleware to satisfy SPEC.md. Inspect the specification, both implementation files and the public tests before editing. Run the public tests and add edge-case coverage for refill, clock behaviour, validation and client isolation. Do not change SPEC.md. Explain the final fix.
+workdir_fixture: ../fixtures/ratelimit
+grader: ../graders/ratelimit.py
+max_turns: 16
+protected_files: [SPEC.md]
