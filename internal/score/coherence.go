@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -35,7 +36,7 @@ func NewCoherence(judge provider.LLM) *Coherence {
 	return NewCoherenceWithModel(judge, "")
 }
 func NewCoherenceWithModel(judge provider.LLM, model string) *Coherence {
-	return &Coherence{judge: judge, model: model, last: Result{Score: 1, Freshness: "unverified"}}
+	return &Coherence{judge: judge, model: model, last: Result{Score: 1, Freshness: FreshnessUnverified}}
 }
 func (*Coherence) Name() string            { return "coherence" }
 func (*Coherence) Deadline() time.Duration { return 8 * time.Second }
@@ -60,7 +61,9 @@ func (c *Coherence) Score(ctx context.Context, input Input) (Result, error) {
 	if len(pairs) == 0 {
 		return Result{Score: 1, Freshness: "not_applicable"}, nil
 	}
-	body, _ := json.Marshal(map[string]any{"instruction": "Classify each pair as consistent, contradictory, or unrelated. Return strict JSON only.", "pairs": pairs})
+	// The pilot's judge replies stopped at the output limit, so ask for the
+	// smallest answer that still identifies each verdict.
+	body, _ := json.Marshal(map[string]any{"instruction": `Classify each pair as consistent, contradictory, or unrelated. Return strict JSON only, with no prose or code fences: {"pairs":[{"left_seq":1,"right_seq":2,"verdict":"consistent","reason":""}]}. Give a reason of at most 15 words only for contradictory pairs; leave it empty otherwise.`, "pairs": pairs})
 	out := make(chan provider.Delta, 64)
 	type judgedResponse struct {
 		response provider.Response
@@ -81,13 +84,20 @@ func (c *Coherence) Score(ctx context.Context, input Input) (Result, error) {
 	completed := <-done
 	response, err := completed.response, completed.err
 	if err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("%w: %w", errJudgeProvider, err)
 	}
 	var raw strings.Builder
 	for _, block := range response.Blocks {
 		if block.Type == "text" {
 			raw.WriteString(block.Text)
 		}
+	}
+	if response.StopReason == "length" {
+		return Result{}, errJudgeTruncated
+	}
+	text := judgeJSON(raw.String())
+	if text == "" {
+		return Result{}, errJudgeEmpty
 	}
 	var judged struct {
 		Pairs []struct {
@@ -97,7 +107,7 @@ func (c *Coherence) Score(ctx context.Context, input Input) (Result, error) {
 			Reason   string `json:"reason"`
 		} `json:"pairs"`
 	}
-	if err := json.Unmarshal([]byte(raw.String()), &judged); err != nil {
+	if err := json.Unmarshal([]byte(text), &judged); err != nil {
 		return Result{}, err
 	}
 	consistent, contradictory := 0, 0
@@ -120,6 +130,18 @@ func (c *Coherence) Score(ctx context.Context, input Input) (Result, error) {
 	c.last = result
 	c.mu.Unlock()
 	return result, nil
+}
+
+// judgeJSON returns the outermost JSON object in a judge reply, tolerating
+// surrounding prose or Markdown fences. A reply without braces is returned
+// trimmed so the decoder reports it as an invalid response.
+func judgeJSON(reply string) string {
+	reply = strings.TrimSpace(reply)
+	start, end := strings.IndexByte(reply, '{'), strings.LastIndexByte(reply, '}')
+	if start < 0 || end < start {
+		return reply
+	}
+	return reply[start : end+1]
 }
 
 type coherencePair struct {

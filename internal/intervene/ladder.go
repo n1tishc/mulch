@@ -23,10 +23,23 @@ type Policy struct {
 	CooldownTurns int     `json:"cooldown_turns"`
 	ConfirmTurns  int     `json:"confirm_turns"`
 	MaxPruneShare float64 `json:"max_prune_share"`
+	// Severe thresholds (0–1 dimension scale) let one badly degraded dimension
+	// select its own repair even while the others keep composite health high.
+	// They count only freshly measured observations, still require the
+	// confirmation window, and respect cooldown. Zero disables a threshold;
+	// with all four zero the ladder routes on composite health alone.
+	SevereSaturationBelow float64 `json:"severe_saturation_below"`
+	SevereStalenessBelow  float64 `json:"severe_staleness_below"`
+	SevereRelevanceBelow  float64 `json:"severe_relevance_below"`
+	SevereCoherenceBelow  float64 `json:"severe_coherence_below"`
 }
 
+// DefaultPolicy is an experimental arm: its severe thresholds were chosen for
+// reachability, not tuned on task outcomes. The 2026-09-08 pilot ran the
+// composite-only policy kept in testdata/policies/pilot-2026-09-08.json.
 func DefaultPolicy() Policy {
-	return Policy{WarnBelow: 80, PruneBelow: 65, CompactBelow: 50, ReanchorBelow: 40, EscalateBelow: 25, Hysteresis: 5, CooldownTurns: 2, ConfirmTurns: 2, MaxPruneShare: .3}
+	return Policy{WarnBelow: 80, PruneBelow: 65, CompactBelow: 50, ReanchorBelow: 40, EscalateBelow: 25, Hysteresis: 5, CooldownTurns: 2, ConfirmTurns: 2, MaxPruneShare: .3,
+		SevereSaturationBelow: .25, SevereStalenessBelow: .3, SevereRelevanceBelow: .3, SevereCoherenceBelow: .6}
 }
 
 type Store interface {
@@ -99,6 +112,18 @@ func New(store Store, policy Policy, requester ...CoherenceRequester) *Ladder {
 	if policy.MaxPruneShare != 0 {
 		d.MaxPruneShare = policy.MaxPruneShare
 	}
+	if policy.SevereSaturationBelow != 0 {
+		d.SevereSaturationBelow = policy.SevereSaturationBelow
+	}
+	if policy.SevereStalenessBelow != 0 {
+		d.SevereStalenessBelow = policy.SevereStalenessBelow
+	}
+	if policy.SevereRelevanceBelow != 0 {
+		d.SevereRelevanceBelow = policy.SevereRelevanceBelow
+	}
+	if policy.SevereCoherenceBelow != 0 {
+		d.SevereCoherenceBelow = policy.SevereCoherenceBelow
+	}
 	return newLadder(store, d, requester...)
 }
 
@@ -169,6 +194,9 @@ func (l *Ladder) BeforeTools(ctx context.Context, turn *hook.Turn) error {
 	if turn.Turn-latest.TurnScored < 1 || turn.Turn-latest.TurnScored > 2 {
 		return l.skip(ctx, turn, latest.TurnScored, "score is too old")
 	}
+	if latest.Unmeasured {
+		return l.skip(ctx, turn, latest.TurnScored, "health score has no measured dimension")
+	}
 	if lastApplied > 0 && turn.Turn-lastApplied <= l.policy.CooldownTurns {
 		action, _ := l.route(latest)
 		return l.skip(ctx, turn, latest.TurnScored, "intervention cooldown skipped "+string(action))
@@ -185,23 +213,46 @@ func (l *Ladder) BeforeTools(ctx context.Context, turn *hook.Turn) error {
 		return l.skip(ctx, turn, latest.TurnScored, "awaiting score confirmation for "+string(action))
 	}
 	threshold := l.policy.WarnBelow
-	if lastApplied > 0 {
+	repaired := lastApplied > 0
+	if repaired {
 		threshold -= l.policy.Hysteresis
 	}
 	window := history[len(history)-confirm:]
+	compositeConfirmed := true
 	for _, record := range window {
-		if record.health.Composite >= threshold {
-			weakest := window[0].health
-			for _, candidate := range window[1:] {
-				if candidate.health.Composite < weakest.Composite {
-					weakest = candidate.health
-				}
-			}
-			action, _ := l.route(weakest)
-			return l.skip(ctx, turn, latest.TurnScored, "health recovered within confirmation window; skipped "+string(action))
+		if record.health.Unmeasured || record.health.Composite >= threshold {
+			compositeConfirmed = false
 		}
 	}
-	action, reason := l.route(latest)
+	severe, severeValue := l.confirmedSevere(window, repaired)
+	pending, _ := l.severeDimension(latest, repaired, false)
+	// A severe reading without fresh confirmation asks for one; coherence is
+	// otherwise judged only every third turn and could never confirm.
+	if severe == "" && pending == "coherence" && l.coherence != nil {
+		l.coherence.Request()
+	}
+	if !compositeConfirmed && severe == "" {
+		if pending != "" {
+			action, _ := l.severeRoute(pending, 0)
+			return l.skip(ctx, turn, latest.TurnScored, "awaiting fresh confirmation of severe "+pending+" for "+string(action))
+		}
+		weakest := window[0].health
+		for _, candidate := range window[1:] {
+			if candidate.health.Composite < weakest.Composite {
+				weakest = candidate.health
+			}
+		}
+		action, _ := l.route(weakest)
+		return l.skip(ctx, turn, latest.TurnScored, "health recovered within confirmation window; skipped "+string(action))
+	}
+	var action Action
+	var reason string
+	if severe != "" && !(compositeConfirmed && latest.Composite < l.policy.EscalateBelow) {
+		action, reason = l.severeRoute(severe, severeValue)
+		reason += fmt.Sprintf(" on %d fresh observations", confirm)
+	} else {
+		action, reason = l.route(latest)
+	}
 	l.mu.Lock()
 	l.contextSeq = 0
 	l.scoreSeq = history[len(history)-1].seq
@@ -280,6 +331,112 @@ func (l *Ladder) route(h event.ScoreHealth) (Action, string) {
 		return ActionWarn, fmt.Sprintf("saturation is %.2f", value)
 	}
 	return ActionWarn, fmt.Sprintf("health is %.0f", h.Composite)
+}
+
+// severeOrder breaks ties between equally degraded dimensions, preferring the
+// repairs that rewrite the least context.
+var severeOrder = []string{"coherence", "staleness", "relevance", "saturation"}
+
+func (l *Ladder) severeThreshold(dimension string, repaired bool) float64 {
+	var threshold float64
+	switch dimension {
+	case "saturation":
+		threshold = l.policy.SevereSaturationBelow
+	case "staleness":
+		threshold = l.policy.SevereStalenessBelow
+	case "relevance":
+		threshold = l.policy.SevereRelevanceBelow
+	case "coherence":
+		threshold = l.policy.SevereCoherenceBelow
+	}
+	if threshold > 0 && repaired {
+		threshold -= l.policy.Hysteresis / 100
+	}
+	return threshold
+}
+
+func dimensionValue(h event.ScoreHealth, dimension string) *float64 {
+	switch dimension {
+	case "saturation":
+		return h.Saturation
+	case "staleness":
+		return h.Staleness
+	case "relevance":
+		return h.Relevance
+	case "coherence":
+		return h.Coherence
+	}
+	return nil
+}
+
+// freshObservation reports whether a dimension was measured on this turn.
+// Records without freshness predate the field and are treated as fresh.
+func freshObservation(h event.ScoreHealth, dimension string) bool {
+	state := h.Freshness[dimension]
+	return state == "" || state == "fresh"
+}
+
+// severeDimension returns the most degraded dimension below its severe
+// threshold in one observation. With requireFresh, reused, unverified, and
+// unavailable values are ignored.
+func (l *Ladder) severeDimension(h event.ScoreHealth, repaired, requireFresh bool) (string, float64) {
+	found, lowest := "", math.Inf(1)
+	for _, dimension := range severeOrder {
+		threshold, value := l.severeThreshold(dimension, repaired), dimensionValue(h, dimension)
+		if threshold <= 0 || value == nil || *value >= threshold || (requireFresh && !freshObservation(h, dimension)) {
+			continue
+		}
+		if *value < lowest {
+			found, lowest = dimension, *value
+		}
+	}
+	return found, lowest
+}
+
+// confirmedSevere returns a dimension that is freshly measured and severe in
+// every observation of the confirmation window, valued at its latest reading.
+func (l *Ladder) confirmedSevere(window []healthRecord, repaired bool) (string, float64) {
+	if len(window) == 0 {
+		return "", 0
+	}
+	latest := window[len(window)-1].health
+	found, lowest := "", math.Inf(1)
+	for _, dimension := range severeOrder {
+		threshold := l.severeThreshold(dimension, repaired)
+		if threshold <= 0 {
+			continue
+		}
+		confirmed := true
+		for _, record := range window {
+			value := dimensionValue(record.health, dimension)
+			if record.health.Unmeasured || value == nil || *value >= threshold || !freshObservation(record.health, dimension) {
+				confirmed = false
+				break
+			}
+		}
+		if !confirmed {
+			continue
+		}
+		if value := *dimensionValue(latest, dimension); value < lowest {
+			found, lowest = dimension, value
+		}
+	}
+	return found, lowest
+}
+
+func (l *Ladder) severeRoute(dimension string, value float64) (Action, string) {
+	reason := fmt.Sprintf("%s is %.2f, below its severe threshold", dimension, value)
+	switch dimension {
+	case "relevance":
+		return ActionPrune, reason
+	case "coherence", "staleness":
+		return ActionReanchor, reason
+	case "saturation":
+		if l.summarizer != nil {
+			return ActionCompact, reason
+		}
+	}
+	return ActionWarn, reason
 }
 func (l *Ladder) apply(ctx context.Context, turn *hook.Turn, h event.ScoreHealth, action Action, reason string) ([]int64, bool, error) {
 	switch action {

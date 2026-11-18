@@ -4,14 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/n1tishc/mulch/internal/provider"
 )
 
-var ErrBudget = errors.New("evaluation token budget exhausted")
+// ErrBudget is returned when a request's conservative reservation would exceed
+// the run allowance. It matches provider.ErrBudgetExhausted.
+var ErrBudget = fmt.Errorf("evaluation %w", provider.ErrBudgetExhausted)
 
+// errMeterClosed is returned for requests issued after the run finished
+// metering; it is not a budget decision.
+var errMeterClosed = errors.New("evaluation meter is closed")
+
+// Usage separates dispatched calls from requests the guard refused. Calls,
+// InputTokens, and OutputTokens describe dispatched requests only;
+// ReservedTokens is the conservative charge (actual usage when reported, the
+// full reservation otherwise); DeniedCalls and DeniedTokens record refusals,
+// which never reached the provider and are not charged.
 type Usage struct {
 	Role           string `json:"role"`
 	Calls          int    `json:"calls"`
@@ -19,6 +31,8 @@ type Usage struct {
 	OutputTokens   int    `json:"output_tokens"`
 	FailedCalls    int    `json:"failed_calls"`
 	ReservedTokens int    `json:"reserved_tokens"`
+	DeniedCalls    int    `json:"denied_calls"`
+	DeniedTokens   int    `json:"denied_tokens"`
 	WallMS         int64  `json:"wall_ms"`
 }
 type meter struct {
@@ -37,6 +51,16 @@ type meteredLLM struct {
 func (m *meter) close() { m.mu.Lock(); m.closed = true; m.mu.Unlock(); m.pending.Wait() }
 
 func (m *meter) wrap(base provider.LLM, role string) provider.LLM { return &meteredLLM{base, m, role} }
+
+// role returns the usage row for name; the caller holds m.mu and stores it back.
+func (m *meter) role(name string) Usage {
+	if m.usage == nil {
+		m.usage = map[string]Usage{}
+	}
+	u := m.usage[name]
+	u.Role = name
+	return u
+}
 func (m *meter) snapshot() (map[string]Usage, int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -63,7 +87,18 @@ func (l *meteredLLM) Stream(ctx context.Context, req provider.Request, out chan<
 	reservation := len(body) + 1024 + req.MaxTokens
 	m := l.meter
 	m.mu.Lock()
-	if m.closed || ctx.Err() != nil || (m.limit > 0 && m.charged+reservation > m.limit) {
+	switch {
+	case m.closed:
+		m.mu.Unlock()
+		return provider.Response{}, errMeterClosed
+	case ctx.Err() != nil:
+		m.mu.Unlock()
+		return provider.Response{}, ctx.Err()
+	case m.limit > 0 && m.charged+reservation > m.limit:
+		u := m.role(l.role)
+		u.DeniedCalls++
+		u.DeniedTokens += reservation
+		m.usage[l.role] = u
 		m.mu.Unlock()
 		return provider.Response{}, ErrBudget
 	}
@@ -82,11 +117,7 @@ func (l *meteredLLM) Stream(ctx context.Context, req provider.Request, out chan<
 		charged = actual
 		m.charged += actual - reservation
 	}
-	if m.usage == nil {
-		m.usage = map[string]Usage{}
-	}
-	u := m.usage[l.role]
-	u.Role = l.role
+	u := m.role(l.role)
 	u.Calls++
 	u.InputTokens += response.InputTokens
 	u.OutputTokens += response.OutputTokens

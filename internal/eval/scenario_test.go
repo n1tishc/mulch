@@ -24,3 +24,15 @@ func TestLoadScenarioDefinesFixtureChecksAndPoisoning(t *testing.T) {
 		t.Fatalf("scenario = %+v", got)
 	}
 }
+
+func TestEveryCheckedInScenarioLoads(t *testing.T) {
+	paths, err := filepath.Glob(filepath.Join("..", "..", "testdata", "scenarios", "*.yaml"))
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("scenarios: %v %v", paths, err)
+	}
+	for _, path := range paths {
+		if _, err := LoadScenario(path); err != nil {
+			t.Errorf("%s: %v", filepath.Base(path), err)
+		}
+	}
+}

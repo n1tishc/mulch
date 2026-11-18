@@ -330,11 +330,14 @@ func (c *chatControl) inspect(ctx context.Context, noOpen bool) (string, bool, e
 	return message, false, nil
 }
 
-func (c *chatControl) closeInspector() {
-	if c.inspectorCancel != nil {
-		c.inspectorCancel()
-		<-c.inspectorDone
+// closeInspector stops the inspection viewer, waits for it, and returns its
+// shutdown error.
+func (c *chatControl) closeInspector() error {
+	if c.inspectorCancel == nil {
+		return nil
 	}
+	c.inspectorCancel()
+	return <-c.inspectorDone
 }
 
 func (c *chatControl) history(ctx context.Context) string {

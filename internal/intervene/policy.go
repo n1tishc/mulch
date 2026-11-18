@@ -43,5 +43,10 @@ func (p Policy) Validate() error {
 	if p.MaxPruneShare <= 0 || p.MaxPruneShare > 1 {
 		return errors.New("invalid policy: max_prune_share must be in (0,1]")
 	}
+	for name, threshold := range map[string]float64{"severe_saturation_below": p.SevereSaturationBelow, "severe_staleness_below": p.SevereStalenessBelow, "severe_relevance_below": p.SevereRelevanceBelow, "severe_coherence_below": p.SevereCoherenceBelow} {
+		if threshold < 0 || threshold > 1 {
+			return fmt.Errorf("invalid policy: %s must be between 0 and 1 (0 disables it)", name)
+		}
+	}
 	return nil
 }

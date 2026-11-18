@@ -108,7 +108,8 @@ func chat(ctx context.Context, args []string, opts Options) error {
 	config := runtimeConfig(store, router, opts, key, recorded.Model, recorded.ContextWindow, mode, policy)
 	config.Provider = activeProvider
 	control := &chatControl{store: store, recorded: &recorded, existing: &existing, config: &config, db: *db, provider: activeProvider, providers: profiles, llmFactory: opts.LLMFactory, configPath: configPath(opts.Getenv)}
-	defer control.closeInspector()
+	// The inspection viewer's shutdown error at exit is not actionable.
+	defer func() { _ = control.closeInspector() }()
 	if chatTerminal(opts) {
 		return runTerminalChat(ctx, opts, control, output)
 	}

@@ -103,7 +103,7 @@ score   repair  steering   live viewer
 
 The core loop depends only on provider and hook interfaces. Scoring and repair remain outside it, and architecture tests enforce the import boundaries. Browser assets are compiled with Vite and embedded into the Go binary.
 
-Mulch's differentiator is auditable context repair, not an unverified claim that repair improves every task. The default intervention ladder requires confirming low-health observations and records the supporting score and resulting context mutation. Optional race mode evaluates bounded repair candidates in isolated workspace copies; candidate edits are never merged into the parent workspace.
+Mulch's differentiator is auditable context repair, not an unverified claim that repair improves every task. The default intervention ladder requires confirming low-health observations, counting only freshly measured scores for a single severely degraded dimension, and records the supporting score and resulting context mutation. Optional race mode evaluates bounded repair candidates in isolated workspace copies; candidate edits are never merged into the parent workspace.
 
 ## Build and test
 
@@ -140,4 +140,6 @@ Relevant public documentation:
 
 The 16-run diagnostic correctness pilot found 3/16 fully correct outcomes. Plain mode completed 3/4 conditions, while scoring-only, intervention, and race modes completed 0/4. Twelve runs exhausted the conservative token budget, no repair fired, and scorer reliability was poor. These results are retained because they define the current limit honestly; see the [full pilot report](docs/correctness-pilot-results.md).
 
-Future work is deliberately narrow: improve score reliability and repair reachability, repeat independently graded trials, broaden provider conformance coverage, and publish npm packages only after a separate registry-release decision.
+Since the pilot, score reliability and repair reachability have been addressed in code. Unverified scores no longer count as healthy, scorer failures are categorized, and per-dimension severe thresholds let one degraded dimension trigger its own repair. The built-in policy is therefore an **untested experimental arm**. The pilot's composite-only policy is kept as `testdata/policies/pilot-2026-09-08.json` and can be selected with `mulch eval --policy`. A held-out, two-arm trial is prepared (`scripts/correctness-trial.py`) but has not been run, so no improvement is claimed; see [the follow-up protocol](docs/correctness-benchmark.md#follow-up-after-the-pilot-prepared-not-yet-run).
+
+Remaining work is deliberately narrow: run that trial and report it as-is, broaden provider conformance coverage, and publish npm packages only after a separate registry-release decision.

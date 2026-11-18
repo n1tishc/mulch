@@ -156,7 +156,7 @@ func TestSyntheticSessionExercisesEveryLadderAction(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := &memoryStore{}
-			ladder := intervene.New(store, intervene.Policy{ConfirmTurns: 1}).WithSummarizer(&fakeSummarizer{summary: "Paths: x.go. Decisions: keep. Open questions: none."})
+			ladder := intervene.NewConfigured(store, baselinePolicy(t, 1)).WithSummarizer(&fakeSummarizer{summary: "Paths: x.go. Decisions: keep. Open questions: none."})
 			encoded, _ := json.Marshal(tc.score)
 			ladder.OnEvent(t.Context(), event.Event{SessionID: "synthetic", Turn: 3, Type: event.TypeScoreHealth, Payload: encoded})
 			turn := &hook.Turn{SessionID: "synthetic", Turn: 4, Visible: visibleHistory(t), ToolCalls: []provider.Block{{Type: "tool_use"}}, Cancel: func(string) {}}
@@ -195,7 +195,7 @@ func TestSyntheticSessionLogReconstructsContextAfterEveryAction(t *testing.T) {
 	appendEvent(3, event.TypeAssistantMessage, event.AssistantMessage{Text: "recent work"})
 
 	apply := func(turn int, score event.ScoreHealth) (bool, []provider.Message) {
-		ladder := intervene.New(store, intervene.Policy{ConfirmTurns: 1}).WithSummarizer(&fakeSummarizer{summary: "Paths: internal/agent/loop.go. Decisions: preserve the event log. Open questions: none."})
+		ladder := intervene.NewConfigured(store, baselinePolicy(t, 1)).WithSummarizer(&fakeSummarizer{summary: "Paths: internal/agent/loop.go. Decisions: preserve the event log. Open questions: none."})
 		encoded, _ := json.Marshal(score)
 		ladder.OnEvent(t.Context(), event.Event{SessionID: id, Turn: score.TurnScored, Type: event.TypeScoreHealth, Payload: encoded})
 		visible, visibleErr := store.Visible(t.Context(), id)
@@ -402,4 +402,32 @@ func TestLadderDoesNotCountDuplicateObservations(t *testing.T) {
 	if store.lastType != event.TypeInterveneSkip {
 		t.Fatalf("duplicate observation produced %s", store.lastType)
 	}
+}
+
+func TestLadderSkipsHealthWithoutMeasuredDimension(t *testing.T) {
+	store := &memoryStore{}
+	ladder := intervene.New(store, intervene.Policy{ConfirmTurns: 2})
+	for _, turn := range []int{1, 2} {
+		b, _ := json.Marshal(event.ScoreHealth{TurnScored: turn, Composite: 0, Unmeasured: true})
+		ladder.OnEvent(t.Context(), event.Event{SessionID: "s", Seq: int64(turn), Type: event.TypeScoreHealth, Payload: b})
+	}
+	turn := &hook.Turn{SessionID: "s", Turn: 3, ToolCalls: []provider.Block{{Type: "tool_use", CallID: "c"}}, Cancel: func(string) { t.Fatal("unmeasured health escalated") }}
+	if err := ladder.BeforeTools(t.Context(), turn); err != nil {
+		t.Fatal(err)
+	}
+	if len(turn.ToolCalls) != 1 {
+		t.Fatal("unmeasured health withheld tool calls")
+	}
+}
+
+// baselinePolicy loads the composite-only policy the 2026-09-08 pilot ran, so
+// tests of composite routing keep guarding that arm and the file stays valid.
+func baselinePolicy(t *testing.T, confirm int) intervene.Policy {
+	t.Helper()
+	policy, err := intervene.LoadPolicy(filepath.Join("..", "..", "testdata", "policies", "pilot-2026-09-08.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.ConfirmTurns = confirm
+	return policy
 }

@@ -78,3 +78,23 @@ mulch serve --addr 127.0.0.1:4141 --db /absolute/path/from/report/trace_db
 - If interventions hurt clean tasks, retain those failures and diagnose them before release claims.
 - If repair improves these tasks, freeze the policy and evaluate on new tasks with repeated, paired trials, all-role cost and latency. Do not report a training-set gain as general superiority.
 - A release can describe verified mechanics even when comparative quality remains unproven. The dashboard must display the same actual behavior being described.
+
+## Follow-up after the pilot (prepared, not yet run)
+
+The pilot's traces showed why nothing fired, and the code now addresses each cause without changing the pilot's record:
+
+- **Scoring failures were invisible.** All 30 coherence observations in the pilot failed, and each reused the judge's never-verified initial value of 1. Judge calls averaged 6.3–8.0 seconds per run against an 8-second deadline, and the six calls that returned reported roughly 825–1,000 output tokens each, at or near the judge's 1,000-token `MaxTokens` limit. Unverified values now carry no number and no weight in composite health, and they are never kept as a fallback. Failures are recorded as `timeout`, `cancelled`, `budget_denied`, `truncated`, `empty_response`, `invalid_response`, or `provider_error`. The judge asks for compact JSON and tolerates Markdown fences. A health record with no measured dimension is marked `unmeasured`, and the ladder skips it instead of reading its zero composite as critical.
+- **Single-dimension repairs were unreachable.** Under default weights, one collapsed dimension left composite health between 61 and 82, so the ladder could warn at most. The built-in policy now adds per-dimension severe thresholds: coherence 0.6, staleness 0.3, relevance 0.3, saturation 0.25. They use only freshly measured observations and still require the confirmation window and cooldown. A severe coherence reading requests a fresh judgment, because coherence is otherwise judged only every third turn. These values were chosen so that repairs can be reached, not tuned on outcomes. Race mode still compares Prune against Reanchor whatever triggered it, so a severe-saturation trigger in race mode does not compact.
+- **The pilot's policy remains available as an arm.** `testdata/policies/pilot-2026-09-08.json` is the pilot's composite-only policy. `mulch eval --policy FILE --judge-model MODEL` selects an arm, and the report and each session's run configuration record the policy that ran. The scoring and judge changes above apply to both arms, so this arm isolates the policy change. It does not reproduce the full pilot configuration.
+- **Spend accounting is explicit.** Per-role usage now separates dispatched calls from requests the guard refused (`denied_calls`, `denied_tokens`). A closed meter or a cancelled context is no longer reported as an exhausted budget.
+- **Session end no longer cuts scoring short.** It waits for the slowest scorer's deadline plus a margin, rather than a fixed 5 seconds that was shorter than the judge's 8. The pilot's 30 failures all happened mid-run, so this was not their cause.
+
+The held-out trial uses the new `ratelimit` and `settings` fixtures. Both are longer than the pilot tasks, and their degraded variants add stale, contradictory, and distracting context. None of these fixtures were used to choose the severe thresholds. `scripts/correctness-trial.py` first calibrates the per-run budget so a plain run can finish, using a rule declared in the script. It then runs both arms with repeated trials and summarizes scorer-failure reasons, skip reasons, and refused requests. Before sending anything, it prices the worst case: every calibration and trial run charged the full `--max-budget` at the planning rate. It refuses to start if that worst case exceeds `--cap-usd`. With the defaults (three runs, 60,000 tokens, $10 per million), that is 4 calibration runs plus 72 trial runs, or $45.60. That planning bound is deliberately far above provider list prices. Check the bound first, then run:
+
+```sh
+go build -o dist/mulch ./cmd/mulch
+python3 scripts/correctness-trial.py run dist/mulch --cap-usd 50 --runs 3 --dry-run
+python3 scripts/correctness-trial.py run dist/mulch --cap-usd 50 --runs 3
+```
+
+Report this trial the same way as the pilot, including regressions on clean tasks. If the trial is not run, or if it again shows no advantage, the supported claim stays the same: the repair mechanics are inspectable, and repair has not been shown to improve correctness.

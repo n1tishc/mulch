@@ -1,0 +1,15 @@
+{
+  "warn_below": 80,
+  "prune_below": 65,
+  "compact_below": 50,
+  "reanchor_below": 40,
+  "escalate_below": 25,
+  "hysteresis": 5,
+  "cooldown_turns": 2,
+  "confirm_turns": 2,
+  "max_prune_share": 0.3,
+  "severe_saturation_below": 0,
+  "severe_staleness_below": 0,
+  "severe_relevance_below": 0,
+  "severe_coherence_below": 0
+}
