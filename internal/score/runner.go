@@ -60,7 +60,8 @@ func NewRunnerWithWeights(store Store, session event.Session, scorers []Scorer, 
 			continue
 		}
 		for name, value := range map[string]*float64{"saturation": health.Saturation, "staleness": health.Staleness, "relevance": health.Relevance, "coherence": health.Coherence} {
-			if value != nil {
+			// Older logs stored unverified placeholders as values; never resume from them.
+			if value != nil && Measured(health.Freshness[name]) {
 				previous[name] = *value
 			}
 		}
@@ -169,6 +170,11 @@ func (r *Runner) score(job scoreJob) {
 	health := event.ScoreHealth{TurnScored: job.turn, Details: result.Details, Freshness: result.Freshness, LatencyMS: result.Latency.Milliseconds(), OnCriticalPath: r.waiting.Load()}
 	var weighted, totalWeight float64
 	for name, value := range result.Scores {
+		// An unverified placeholder is reported through Freshness only: it has
+		// no value to display and must not lift composite health.
+		if !Measured(result.Freshness[name]) {
+			continue
+		}
 		copy := value
 		switch name {
 		case "saturation":
@@ -187,6 +193,8 @@ func (r *Runner) score(job scoreJob) {
 	}
 	if totalWeight > 0 {
 		health.Composite = 100 * weighted / totalWeight
+	} else {
+		health.Unmeasured = true
 	}
 	r.append(job, event.TypeScoreHealth, health)
 }

@@ -403,3 +403,19 @@ func TestLadderDoesNotCountDuplicateObservations(t *testing.T) {
 		t.Fatalf("duplicate observation produced %s", store.lastType)
 	}
 }
+
+func TestLadderSkipsHealthWithoutMeasuredDimension(t *testing.T) {
+	store := &memoryStore{}
+	ladder := intervene.New(store, intervene.Policy{ConfirmTurns: 2})
+	for _, turn := range []int{1, 2} {
+		b, _ := json.Marshal(event.ScoreHealth{TurnScored: turn, Composite: 0, Unmeasured: true})
+		ladder.OnEvent(t.Context(), event.Event{SessionID: "s", Seq: int64(turn), Type: event.TypeScoreHealth, Payload: b})
+	}
+	turn := &hook.Turn{SessionID: "s", Turn: 3, ToolCalls: []provider.Block{{Type: "tool_use", CallID: "c"}}, Cancel: func(string) { t.Fatal("unmeasured health escalated") }}
+	if err := ladder.BeforeTools(t.Context(), turn); err != nil {
+		t.Fatal(err)
+	}
+	if len(turn.ToolCalls) != 1 {
+		t.Fatal("unmeasured health withheld tool calls")
+	}
+}

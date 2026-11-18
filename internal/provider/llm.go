@@ -1,6 +1,14 @@
 package provider
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrBudgetExhausted marks a request refused before dispatch by a spend guard.
+// Wrappers return an error matching it with errors.Is so callers can tell a
+// local refusal apart from a provider failure.
+var ErrBudgetExhausted = errors.New("token budget exhausted")
 
 type Role string
 

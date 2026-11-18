@@ -11,3 +11,8 @@ test("trace pairs tools by turn, retains asynchronous evidence and bounds stream
   assert.match(result[1].nodes[1].label,/scored turn 1/);
   assert.equal(result[1].nodes.length,2);assert.equal(result[1].deltas,10000);
 });
+test("unmeasured health is labelled instead of shown as a zero composite",()=>{
+  const event:TraceEvent={id:1,session_id:"s",seq:1,turn:2,type:"score.health",payload:{turn_scored:1,composite:0,unmeasured:true},visible:true,created_at:""};
+  const label=traceTree([event])[0].nodes[0].label;
+  assert.match(label,/unmeasured/);assert.doesNotMatch(label,/0\.0/);
+});

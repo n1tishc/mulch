@@ -152,23 +152,58 @@ func (c *Composite) Score(ctx context.Context, input Input) CompositeResult {
 	sort.Slice(answer.Partials, func(i, j int) bool { return answer.Partials[i].Name < answer.Partials[j].Name })
 	c.mu.Lock()
 	for name, value := range answer.Scores {
+		// A placeholder that was never checked must not become the fallback a
+		// later failure reuses; otherwise "reused" would launder "unverified".
+		if answer.Freshness[name] == FreshnessUnverified {
+			continue
+		}
 		c.previous[name] = value
 	}
 	c.mu.Unlock()
 	return answer
 }
 
+// Freshness states recorded per dimension on each health observation.
+const (
+	FreshnessFresh         = "fresh"
+	FreshnessReused        = "reused"
+	FreshnessUnavailable   = "unavailable"
+	FreshnessUnverified    = "unverified"
+	FreshnessNotApplicable = "not_applicable"
+)
+
+// Measured reports whether a dimension in this freshness state carries a real
+// observation that may contribute to composite health.
+func Measured(freshness string) bool {
+	return freshness != FreshnessUnverified && freshness != FreshnessUnavailable
+}
+
+var (
+	errJudgeProvider  = errors.New("judge provider call failed")
+	errJudgeTruncated = errors.New("judge response truncated at the output token limit")
+	errJudgeEmpty     = errors.New("judge response contained no text")
+)
+
 func failureReason(err error) string {
-	if errors.Is(err, context.Canceled) {
+	switch {
+	case errors.Is(err, context.Canceled):
 		return "cancelled"
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
+	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
+	case errors.Is(err, provider.ErrBudgetExhausted):
+		return "budget_denied"
+	case errors.Is(err, errJudgeTruncated):
+		return "truncated"
+	case errors.Is(err, errJudgeEmpty):
+		return "empty_response"
 	}
 	var syntax *json.SyntaxError
 	var mismatch *json.UnmarshalTypeError
 	if errors.As(err, &syntax) || errors.As(err, &mismatch) {
 		return "invalid_response"
+	}
+	if errors.Is(err, errJudgeProvider) {
+		return "provider_error"
 	}
 	return "scorer_error"
 }

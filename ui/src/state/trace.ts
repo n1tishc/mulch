@@ -11,7 +11,7 @@ export function traceTree(events: TraceEvent[]): TraceTurn[] {
     const p = payload(event);
     const label = event.type === "assistant.tool_call" ? `Tool · ${p.name || "unknown"}`
       : event.type === "tool.result" ? `${p.cancelled ? "Cancelled" : p.is_error || p.timed_out ? "Failed" : "Finished"} · ${p.duration_ms ?? "?"} ms`
-      : event.type === "score.health" ? `Health · ${Number(p.composite).toFixed(1)} · scored turn ${p.turn_scored}`
+      : event.type === "score.health" ? `Health · ${p.unmeasured ? "unmeasured" : Number(p.composite).toFixed(1)} · scored turn ${p.turn_scored}`
       : event.type === "score.partial" ? `Scorer unavailable · ${p.name} · ${p.reason || "unknown"}`
       : event.type === "intervene.fire" ? `Repair · ${p.action}`
       : event.type === "intervene.skip" ? `Repair skipped · ${p.reason || "reason unrecorded"}`

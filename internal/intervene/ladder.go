@@ -169,6 +169,9 @@ func (l *Ladder) BeforeTools(ctx context.Context, turn *hook.Turn) error {
 	if turn.Turn-latest.TurnScored < 1 || turn.Turn-latest.TurnScored > 2 {
 		return l.skip(ctx, turn, latest.TurnScored, "score is too old")
 	}
+	if latest.Unmeasured {
+		return l.skip(ctx, turn, latest.TurnScored, "health score has no measured dimension")
+	}
 	if lastApplied > 0 && turn.Turn-lastApplied <= l.policy.CooldownTurns {
 		action, _ := l.route(latest)
 		return l.skip(ctx, turn, latest.TurnScored, "intervention cooldown skipped "+string(action))

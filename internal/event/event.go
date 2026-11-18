@@ -173,9 +173,12 @@ type ContextCompact struct {
 }
 type TurnCompleted struct{}
 type ScoreHealth struct {
-	Freshness      map[string]string         `json:"freshness,omitempty"`
-	TurnScored     int                       `json:"turn_scored"`
-	Composite      float64                   `json:"composite"`
+	Freshness  map[string]string `json:"freshness,omitempty"`
+	TurnScored int               `json:"turn_scored"`
+	Composite  float64           `json:"composite"`
+	// Unmeasured is set when no dimension carried a real observation; its
+	// Composite is then a placeholder, not a low-health signal.
+	Unmeasured     bool                      `json:"unmeasured,omitempty"`
 	Saturation     *float64                  `json:"saturation,omitempty"`
 	Staleness      *float64                  `json:"staleness,omitempty"`
 	Relevance      *float64                  `json:"relevance,omitempty"`
