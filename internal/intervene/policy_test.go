@@ -27,3 +27,23 @@ func TestLoadPolicyOverridesDefaultsAndRejectsInvalidThresholdOrder(t *testing.T
 		t.Fatal("invalid threshold order accepted")
 	}
 }
+
+func TestLoadPolicyValidatesSevereThresholdsAndAllowsDisablingThem(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(path, []byte(`{"severe_coherence_below":1.5}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := intervene.LoadPolicy(path); err == nil {
+		t.Fatal("severe threshold above 1 accepted")
+	}
+	if err := os.WriteFile(path, []byte(`{"severe_coherence_below":0,"severe_staleness_below":0}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := intervene.LoadPolicy(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SevereCoherenceBelow != 0 || got.SevereStalenessBelow != 0 || got.SevereRelevanceBelow != intervene.DefaultPolicy().SevereRelevanceBelow {
+		t.Fatalf("explicit zero must disable only the named thresholds: %#v", got)
+	}
+}
