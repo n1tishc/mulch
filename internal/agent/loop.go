@@ -337,8 +337,21 @@ func continueSession(ctx context.Context, deps Dependencies, id string, started 
 	return fail(fmt.Errorf("%w (%d)", ErrMaxTurns, deps.MaxTurns), lastTurn, totalInput, totalOutput)
 }
 
+// minimumHookWait bounds session shutdown for hooks that declare no budget.
+const minimumHookWait = 5 * time.Second
+
+func hookWaitBudget(hooks []hook.Hook) time.Duration {
+	budget := minimumHookWait
+	for _, extension := range hooks {
+		if declared, ok := extension.(hook.WaitBudgeter); ok && declared.WaitBudget() > budget {
+			budget = declared.WaitBudget()
+		}
+	}
+	return budget
+}
+
 func waitForHooks(hooks []hook.Hook) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), hookWaitBudget(hooks))
 	defer cancel()
 	for _, extension := range hooks {
 		if waiter, ok := extension.(hook.Waiter); ok {

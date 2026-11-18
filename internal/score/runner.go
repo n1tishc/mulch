@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/n1tishc/mulch/internal/event"
 	"github.com/n1tishc/mulch/internal/provider"
@@ -78,6 +79,20 @@ func NewRunnerWithWeights(store Store, session event.Session, scorers []Scorer, 
 	}
 	go r.run()
 	return r
+}
+
+// waitMargin covers queueing and the final health append after the slowest
+// scorer's own deadline.
+const waitMargin = time.Second
+
+// WaitBudget is the longest scorer deadline plus a margin: the final turn's
+// score can then finish (or record its own timeout) before the session ends.
+func (r *Runner) WaitBudget() time.Duration {
+	var longest time.Duration
+	for _, scorer := range r.composite.scorers {
+		longest = max(longest, scorer.Deadline())
+	}
+	return longest + waitMargin
 }
 
 func (*Runner) Name() string                    { return "score" }

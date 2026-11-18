@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/n1tishc/mulch/internal/event"
+	"github.com/n1tishc/mulch/internal/hook"
 	"github.com/n1tishc/mulch/internal/provider"
 	"github.com/n1tishc/mulch/internal/score"
 )
@@ -155,5 +156,16 @@ func TestCoherenceAcceptsFencedJudgeJSON(t *testing.T) {
 	}})
 	if err != nil || result.Score != 0 {
 		t.Fatalf("score = %v err = %v", result.Score, err)
+	}
+}
+
+var _ hook.WaitBudgeter = (*score.Runner)(nil)
+
+func TestRunnerWaitBudgetOutlastsTheSlowestScorerDeadline(t *testing.T) {
+	runner := score.NewRunner(nil, event.Session{}, []score.Scorer{score.Saturation{}, score.NewCoherence(nil)})
+	defer func() { _ = runner.Wait(t.Context()) }()
+	coherence := score.NewCoherence(nil).Deadline()
+	if got := runner.WaitBudget(); got <= coherence {
+		t.Fatalf("wait budget %s does not outlast the coherence deadline %s", got, coherence)
 	}
 }

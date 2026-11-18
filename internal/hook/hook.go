@@ -2,6 +2,7 @@ package hook
 
 import (
 	"context"
+	"time"
 
 	"github.com/n1tishc/mulch/internal/event"
 	"github.com/n1tishc/mulch/internal/provider"
@@ -37,4 +38,11 @@ type BeforeTools interface {
 type Waiter interface {
 	Hook
 	Wait(context.Context) error
+}
+
+// WaitBudgeter is an optional Waiter extension declaring how long its pending
+// work may legitimately need, so the session does not cancel the final turn's
+// work before that work's own deadline.
+type WaitBudgeter interface {
+	WaitBudget() time.Duration
 }
