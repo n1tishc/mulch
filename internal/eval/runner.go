@@ -31,11 +31,23 @@ import (
 type Options struct {
 	Runs, Concurrency int
 	OutputDir, Model  string
-	LLM               func() provider.LLM
-	Modes             []harness.Mode
-	Seed              int64
-	TokenBudget       int
+	// JudgeModel scores coherence and writes summaries; empty uses Model.
+	JudgeModel  string
+	LLM         func() provider.LLM
+	Modes       []harness.Mode
+	Seed        int64
+	TokenBudget int
+	// Policy is the intervention arm under test; nil uses intervene.DefaultPolicy.
+	Policy *intervene.Policy
 }
+
+func (o Options) policy() intervene.Policy {
+	if o.Policy != nil {
+		return *o.Policy
+	}
+	return intervene.DefaultPolicy()
+}
+
 type RunResult struct {
 	Status              event.Status     `json:"status"`
 	Mode                string           `json:"mode"`
@@ -74,6 +86,7 @@ type ModeResult struct {
 }
 type Report struct {
 	Model          string           `json:"model"`
+	JudgeModel     string           `json:"judge_model,omitempty"`
 	ScenarioConfig Scenario         `json:"scenario_config"`
 	GraderSHA256   string           `json:"grader_sha256,omitempty"`
 	Policy         intervene.Policy `json:"policy"`
@@ -196,7 +209,7 @@ func Run(ctx context.Context, scenario Scenario, opts Options) (Report, error) {
 		j := jobs[ro.Workdir]
 		jobsMu.RUnlock()
 		recorded := event.Session{ID: id, Task: task, Model: opts.Model, Workdir: ro.Workdir, ContextWindow: 200000}
-		config := harness.Config{IsolatedPrompt: true, Store: store, Router: dispatch, Model: opts.Model, ContextWindow: 200000, MaxTurns: scenario.MaxTurns, Mode: harness.Mode(j.mode), Policy: intervene.DefaultPolicy(), Weights: score.DefaultWeights(),
+		config := harness.Config{IsolatedPrompt: true, Store: store, Router: dispatch, Model: opts.Model, ContextWindow: 200000, MaxTurns: scenario.MaxTurns, Mode: harness.Mode(j.mode), Policy: opts.policy(), JudgeModel: opts.JudgeModel, Weights: score.DefaultWeights(),
 			LLM: func(_ string, role string) provider.LLM { return j.meter.wrap(opts.LLM(), role) }}
 		runErr := config.Execute(runCtx, recorded, false, task, []hook.Hook{&injector{store: store, injections: scenario.Injections}, steering.Bind(store)}, nil)
 		j.meter.close()
@@ -259,7 +272,7 @@ func Run(ctx context.Context, scenario Scenario, opts Options) (Report, error) {
 	if scenario.Grader != "" {
 		graderHash = fmt.Sprintf("%x", sha256.Sum256(graderBytes))
 	}
-	report := Report{Model: opts.Model, ScenarioConfig: scenario, GraderSHA256: graderHash, Policy: intervene.DefaultPolicy(), TraceDB: db, Seed: opts.Seed, TokenBudget: opts.TokenBudget, Scenario: scenario.Name, SampleSize: opts.Runs, TotalWallMS: time.Since(started).Milliseconds(), Runs: results, Modes: aggregate(results)}
+	report := Report{Model: opts.Model, JudgeModel: opts.JudgeModel, ScenarioConfig: scenario, GraderSHA256: graderHash, Policy: opts.policy(), TraceDB: db, Seed: opts.Seed, TokenBudget: opts.TokenBudget, Scenario: scenario.Name, SampleSize: opts.Runs, TotalWallMS: time.Since(started).Milliseconds(), Runs: results, Modes: aggregate(results)}
 	if err = os.MkdirAll(opts.OutputDir, 0755); err != nil {
 		return Report{}, err
 	}

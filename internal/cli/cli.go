@@ -334,11 +334,17 @@ func evalCommand(ctx context.Context, args []string, opts Options) error {
 	concurrency := flags.Int("concurrency", 5, "maximum concurrent sessions")
 	output := flags.String("output", ".", "report directory")
 	model := flags.String("model", envOr(opts.Getenv, "MULCH_MODEL", defaultModel), "model")
+	judgeModel := flags.String("judge-model", opts.Getenv("MULCH_JUDGE_MODEL"), "coherence judge and summary model (default: --model)")
+	policyPath := flags.String("policy", "", "intervention policy JSON file for this arm (default: built-in policy)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
 		return errors.New("mulch eval requires exactly one scenario file")
+	}
+	policy, err := configuredPolicy(*policyPath)
+	if err != nil {
+		return err
 	}
 	if *runs < 1 || *concurrency < 1 || *tokenBudget < 1 {
 		return errors.New("--runs and --concurrency must be positive")
@@ -355,7 +361,7 @@ func evalCommand(ctx context.Context, args []string, opts Options) error {
 	for _, m := range strings.Split(*modesFlag, ",") {
 		modes = append(modes, harness.Mode(strings.TrimSpace(m)))
 	}
-	result, err := meval.Run(ctx, scenario, meval.Options{Modes: modes, Seed: *seed, TokenBudget: *tokenBudget, Runs: *runs, Concurrency: *concurrency, OutputDir: *output, Model: *model, LLM: func() provider.LLM { return opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")) }})
+	result, err := meval.Run(ctx, scenario, meval.Options{Modes: modes, Seed: *seed, TokenBudget: *tokenBudget, Runs: *runs, Concurrency: *concurrency, OutputDir: *output, Model: *model, JudgeModel: *judgeModel, Policy: &policy, LLM: func() provider.LLM { return opts.LLMFactory(key, opts.Getenv("MULCH_PROVIDER_BASE_URL")) }})
 	if err != nil {
 		return err
 	}

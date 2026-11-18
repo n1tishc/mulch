@@ -10,7 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/n1tishc/mulch/internal/event"
+	"github.com/n1tishc/mulch/internal/intervene"
 	"github.com/n1tishc/mulch/internal/provider"
+	harness "github.com/n1tishc/mulch/internal/runtime"
 )
 
 type recordingLLM struct {
@@ -180,4 +183,51 @@ def all_rows(rows, batch_size):
 			}
 		})
 	}
+}
+
+func TestRunAppliesAndRecordsTheSelectedPolicyArm(t *testing.T) {
+	scenario, err := LoadScenario(filepath.Join("..", "..", "testdata", "scenarios", "poisoned-context.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := intervene.LoadPolicy(filepath.Join("..", "..", "testdata", "policies", "pilot-2026-09-08.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var active, peak atomic.Int32
+	var sawPoison atomic.Bool
+	report, err := Run(t.Context(), scenario, Options{Runs: 1, Concurrency: 1, OutputDir: t.TempDir(), Model: "fake", JudgeModel: "fake-judge", Policy: &baseline, Modes: []harness.Mode{harness.Repair},
+		LLM: func() provider.LLM { return &recordingLLM{active: &active, peak: &peak, sawPoison: &sawPoison} }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Policy != baseline || report.JudgeModel != "fake-judge" {
+		t.Fatalf("report policy=%+v judge=%q", report.Policy, report.JudgeModel)
+	}
+	store, err := event.Open(t.Context(), report.TraceDB, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	events, err := store.List(t.Context(), report.Runs[0].SessionID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, recorded := range events {
+		if recorded.Type != event.TypeRunConfig {
+			continue
+		}
+		var config struct {
+			Policy     intervene.Policy `json:"policy"`
+			JudgeModel string           `json:"judge_model"`
+		}
+		if err := recorded.Decode(&config); err != nil {
+			t.Fatal(err)
+		}
+		if config.Policy != baseline || config.JudgeModel != "fake-judge" {
+			t.Fatalf("session ran policy=%+v judge=%q, want the selected arm", config.Policy, config.JudgeModel)
+		}
+		return
+	}
+	t.Fatal("run configuration was not recorded")
 }
